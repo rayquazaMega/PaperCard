@@ -838,7 +838,20 @@ select {
   width: 100%;
 }
 
-.pdf-modal header {
+.original-modal {
+  background: var(--panel);
+  border-radius: 8px;
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.28);
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  max-height: min(760px, calc(100vh - 48px));
+  max-width: 760px;
+  overflow: hidden;
+  width: 100%;
+}
+
+.pdf-modal header,
+.original-modal header {
   align-items: center;
   border-bottom: 1px solid var(--line);
   display: grid;
@@ -848,21 +861,30 @@ select {
 }
 
 .pdf-modal header span,
-.pdf-modal header strong {
+.pdf-modal header strong,
+.original-modal header span,
+.original-modal header strong {
   display: block;
 }
 
-.pdf-modal header span {
+.pdf-modal header span,
+.original-modal header span {
   color: var(--blue);
   font-size: 12px;
   font-weight: 800;
   margin-bottom: 4px;
 }
 
-.pdf-modal header strong {
+.pdf-modal header strong,
+.original-modal header strong {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.original-body {
+  overflow: auto;
+  padding: 20px;
 }
 
 .pdf-actions {

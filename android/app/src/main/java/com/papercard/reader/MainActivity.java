@@ -248,7 +248,7 @@ public class MainActivity extends Activity {
         Button pdf = button("PDF");
         pdf.setOnClickListener(view -> openPdf(paper));
         Button original = button("原文");
-        original.setOnClickListener(view -> openUrl(paper.absUrl));
+        original.setOnClickListener(view -> showOriginalPaper(paper));
         Button previous = button("上一条");
         previous.setEnabled(cursor > 0);
         previous.setOnClickListener(view -> recoverPreviousAction());
@@ -631,14 +631,16 @@ public class MainActivity extends Activity {
                 }
                 runOnUiThread(() -> {
                     clearTranslationQueued(target);
-                    if (!silent) toast("翻译已更新");
-                    render();
+                    if (!silent) {
+                        toast("翻译已更新");
+                        render();
+                    }
                 });
             } catch (Exception exception) {
                 runOnUiThread(() -> {
                     clearTranslationQueued(target);
                     if (!silent) toast(exception.getMessage());
-                    render();
+                    if (!silent) render();
                 });
             }
         });
@@ -745,6 +747,28 @@ public class MainActivity extends Activity {
         intent.putExtra("pdfUrl", paper.pdfUrl);
         intent.putExtra("readingMode", store.preferences.pdfReadingMode);
         startActivity(intent);
+    }
+
+    private void showOriginalPaper(Paper paper) {
+        ScrollView scrollView = new ScrollView(this);
+        LinearLayout body = new LinearLayout(this);
+        body.setOrientation(LinearLayout.VERTICAL);
+        body.setPadding(dp(18), dp(14), dp(18), dp(4));
+
+        TextView title = text(paper.title, 18, COLOR_INK);
+        title.setTypeface(null, android.graphics.Typeface.BOLD);
+        body.addView(title);
+        TextView meta = text(paper.category + " · " + authorLine(paper), 13, COLOR_MUTED);
+        meta.setPadding(0, dp(10), 0, dp(12));
+        body.addView(meta);
+        body.addView(text(paper.summary, 15, Color.rgb(45, 56, 60)));
+        scrollView.addView(body);
+
+        new AlertDialog.Builder(this)
+                .setTitle("英文原文")
+                .setView(scrollView)
+                .setNegativeButton("关闭", null)
+                .show();
     }
 
     private void openUrl(String url) {

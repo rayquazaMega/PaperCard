@@ -109,6 +109,7 @@ function App() {
   const [lastError, setLastError] = useState<string | null>(null);
   const [toast, setToast] = useState<Toast>(null);
   const [pdfPaper, setPdfPaper] = useState<Paper | null>(null);
+  const [originalPaper, setOriginalPaper] = useState<Paper | null>(null);
   const [translatingIds, setTranslatingIds] = useState<Set<string>>(() => new Set());
   const [lastAction, setLastAction] = useState<Paper | null>(null);
   const [keywordDraft, setKeywordDraft] = useState("");
@@ -255,9 +256,11 @@ function App() {
     try {
       setTranslatingIds((value) => new Set(value).add(paper.id));
       const response = await translatePaper(paper.id, force);
-      const updated = { ...paper, translation: response.translation };
-      applyPaper(updated);
-      if (!silent) showToast({ tone: "ok", text: "翻译已更新" });
+      if (!silent) {
+        const updated = { ...paper, translation: response.translation };
+        applyPaper(updated);
+        showToast({ tone: "ok", text: "翻译已更新" });
+      }
     } catch (translateError) {
       const message = translateError instanceof Error ? translateError.message : String(translateError);
       if (silent && message.includes("AGNES_API_KEY")) {
@@ -427,6 +430,7 @@ function App() {
               onUndo={handleUndo}
               onTranslate={handleTranslate}
               onPdf={setPdfPaper}
+              onOriginal={setOriginalPaper}
               onSettings={() => setTab("settings")}
               canUndo={Boolean(lastAction)}
             />
@@ -491,6 +495,7 @@ function App() {
       </nav>
 
       {pdfPaper ? <PdfModal paper={pdfPaper} onClose={() => setPdfPaper(null)} /> : null}
+      {originalPaper ? <OriginalModal paper={originalPaper} onClose={() => setOriginalPaper(null)} /> : null}
       {toast ? <div className={`toast ${toast.tone}`}>{toast.text}</div> : null}
     </div>
   );
@@ -532,6 +537,7 @@ interface TodayViewProps {
   onUndo: () => Promise<void>;
   onTranslate: (paper: Paper, force?: boolean, silent?: boolean) => Promise<void>;
   onPdf: (paper: Paper) => void;
+  onOriginal: (paper: Paper) => void;
 }
 
 function TodayView({
@@ -551,7 +557,8 @@ function TodayView({
   onAction,
   onUndo,
   onTranslate,
-  onPdf
+  onPdf,
+  onOriginal
 }: TodayViewProps) {
   if (loading) {
     return (
@@ -624,6 +631,7 @@ function TodayView({
         onAction={onAction}
         onTranslate={onTranslate}
         onPdf={onPdf}
+        onOriginal={onOriginal}
       />
       <div className="action-row">
         <button className="round-action reject" type="button" onClick={() => onAction(currentPaper, "skip")} title="略过">
@@ -646,9 +654,10 @@ interface PaperCardProps {
   onAction: (paper: Paper, action: PaperAction) => Promise<void>;
   onTranslate: (paper: Paper, force?: boolean, silent?: boolean) => Promise<void>;
   onPdf: (paper: Paper) => void;
+  onOriginal: (paper: Paper) => void;
 }
 
-function PaperCard({ paper, translating, onAction, onTranslate, onPdf }: PaperCardProps) {
+function PaperCard({ paper, translating, onAction, onTranslate, onPdf, onOriginal }: PaperCardProps) {
   const [start, setStart] = useState<{ x: number; y: number } | null>(null);
   const [drag, setDrag] = useState({ x: 0, y: 0 });
   const rotation = drag.x / 24;
@@ -708,10 +717,10 @@ function PaperCard({ paper, translating, onAction, onTranslate, onPdf }: PaperCa
           <BookOpen size={17} />
           PDF
         </button>
-        <a className="soft-button" href={paper.absUrl} target="_blank" rel="noreferrer">
+        <button className="soft-button" type="button" onClick={() => onOriginal(paper)}>
           <ExternalLink size={17} />
           原文
-        </a>
+        </button>
       </div>
     </article>
   );
@@ -984,6 +993,32 @@ function SettingsView({
           <button className="soft-button" type="button" onClick={onSaveApiBase}>
             应用
           </button>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function OriginalModal({ paper, onClose }: { paper: Paper; onClose: () => void }) {
+  return (
+    <div className="modal-backdrop">
+      <section className="original-modal">
+        <header>
+          <div>
+            <span>{paper.category}</span>
+            <strong>{paper.title}</strong>
+          </div>
+          <button className="icon-button" type="button" onClick={onClose} title="关闭">
+            <X size={18} />
+          </button>
+        </header>
+        <div className="original-body">
+          <p className="authors">{authorLine(paper)}</p>
+          <p className="abstract">{paper.summary}</p>
+          <a className="soft-button" href={paper.absUrl} target="_blank" rel="noreferrer">
+            <ExternalLink size={17} />
+            打开 arXiv
+          </a>
         </div>
       </section>
     </div>
