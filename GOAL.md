@@ -407,7 +407,7 @@ For native migration changes, additionally verify:
 
 ## Mainland China arXiv Access Notes
 
-Mirror availability appears inconsistent and should be treated as an optional acceleration layer rather than a hard dependency.
+Official arXiv documentation says the old arXiv mirror network was shut down on 2024-09-15, so mirror availability should be treated as unofficial, inconsistent, and optional rather than a hard dependency.
 
 Known candidates found during research:
 
