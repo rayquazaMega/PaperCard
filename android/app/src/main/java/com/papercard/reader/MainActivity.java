@@ -59,6 +59,7 @@ public class MainActivity extends Activity {
     private final HashSet<String> queuedPdfIds = new HashSet<>();
     private LinearLayout root;
     private FrameLayout content;
+    private final ArrayList<String> reviewQueueIds = new ArrayList<>();
     private int activeTab = TAB_TODAY;
     private int cursor = 0;
     private String activeFolderId = PaperModels.DEFAULT_FOLDER_ID;
@@ -144,9 +145,10 @@ public class MainActivity extends Activity {
         LinearLayout page = page();
         content.addView(page);
 
-        ArrayList<Paper> queue = store.queue();
-        if (cursor >= queue.size()) cursor = Math.max(0, queue.size() - 1);
-        Paper paper = queue.isEmpty() ? null : queue.get(cursor);
+        ArrayList<Paper> queue = reviewQueue();
+        if (cursor < 0) cursor = 0;
+        if (cursor > queue.size()) cursor = queue.size();
+        Paper paper = cursor < queue.size() ? queue.get(cursor) : null;
         if (paper == null) {
             LinearLayout empty = cardPanel();
             empty.setGravity(Gravity.CENTER);
@@ -157,6 +159,10 @@ public class MainActivity extends Activity {
             Button sync = primaryButton("重新同步");
             sync.setOnClickListener(view -> syncPapers(true));
             empty.addView(sync);
+            Button previous = button("上一条");
+            previous.setEnabled(cursor > 0);
+            previous.setOnClickListener(view -> recoverPreviousAction());
+            empty.addView(previous);
             page.addView(empty);
             return;
         }
@@ -244,7 +250,7 @@ public class MainActivity extends Activity {
         Button original = button("原文");
         original.setOnClickListener(view -> openUrl(paper.absUrl));
         Button previous = button("上一条");
-        previous.setEnabled(lastAction != null);
+        previous.setEnabled(cursor > 0);
         previous.setOnClickListener(view -> recoverPreviousAction());
         Button skip = button("略过");
         skip.setOnClickListener(view -> skipPaper(paper));
@@ -567,6 +573,7 @@ public class MainActivity extends Activity {
                     if (downloads != null) deleteRecursively(downloads);
                     activeTab = TAB_TODAY;
                     cursor = 0;
+                    reviewQueueIds.clear();
                     render();
                 })
                 .show());
@@ -585,6 +592,7 @@ public class MainActivity extends Activity {
                 ArxivClient.Result result = new ArxivClient().fetch(store.preferences);
                 store.replacePapers(result.papers, result.query);
                 cursor = 0;
+                rebuildReviewQueue();
                 runOnUiThread(() -> {
                     busy = false;
                     toast("同步完成：" + result.papers.size() + " 篇");
@@ -684,10 +692,34 @@ public class MainActivity extends Activity {
         }
     }
 
+    private ArrayList<Paper> reviewQueue() {
+        if (reviewQueueIds.isEmpty() && !store.papers.isEmpty()) rebuildReviewQueue();
+        ArrayList<Paper> values = new ArrayList<>();
+        for (String paperId : reviewQueueIds) {
+            Paper paper = store.getPaper(paperId);
+            if (paper != null) values.add(paper);
+        }
+        if (values.size() != reviewQueueIds.size()) {
+            rebuildReviewQueue();
+            values.clear();
+            for (String paperId : reviewQueueIds) {
+                Paper paper = store.getPaper(paperId);
+                if (paper != null) values.add(paper);
+            }
+        }
+        return values;
+    }
+
+    private void rebuildReviewQueue() {
+        reviewQueueIds.clear();
+        for (Paper paper : store.queue()) reviewQueueIds.add(paper.id);
+        if (cursor > reviewQueueIds.size()) cursor = reviewQueueIds.size();
+    }
+
     private void favoritePaper(Paper paper) {
         lastAction = paper;
         store.favorite(paper, activeFolderId);
-        cursor = 0;
+        cursor = Math.min(cursor + 1, reviewQueueIds.size());
         toast("已收藏到 " + store.folderName(activeFolderId));
         render();
     }
@@ -695,16 +727,14 @@ public class MainActivity extends Activity {
     private void skipPaper(Paper paper) {
         lastAction = paper;
         store.skip(paper);
-        cursor = 0;
+        cursor = Math.min(cursor + 1, reviewQueueIds.size());
         toast("已略过");
         render();
     }
 
     private void recoverPreviousAction() {
-        if (lastAction == null) return;
-        store.clearAction(lastAction);
-        lastAction = null;
-        toast("已回到上一条");
+        if (cursor <= 0) return;
+        cursor--;
         render();
     }
 
