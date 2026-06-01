@@ -67,6 +67,12 @@ function hasSeenPaper(paper: Paper) {
   return Boolean(paper.favoriteAt || paper.skippedAt);
 }
 
+function buildReviewQueueIds(papers: Paper[]) {
+  return [...papers]
+    .sort((a, b) => Number(hasSeenPaper(a)) - Number(hasSeenPaper(b)))
+    .map((paper) => paper.id);
+}
+
 function formatDate(value: string) {
   if (!value) return "";
   return new Intl.DateTimeFormat("zh-CN", { month: "short", day: "numeric" }).format(new Date(value));
@@ -111,7 +117,7 @@ function App() {
   const [pdfPaper, setPdfPaper] = useState<Paper | null>(null);
   const [originalPaper, setOriginalPaper] = useState<Paper | null>(null);
   const [translatingIds, setTranslatingIds] = useState<Set<string>>(() => new Set());
-  const [lastAction, setLastAction] = useState<Paper | null>(null);
+  const [reviewQueueIds, setReviewQueueIds] = useState<string[]>([]);
   const [keywordDraft, setKeywordDraft] = useState("");
   const [apiDraft, setApiDraft] = useState(getApiBase());
   const [autoTranslateBlocked, setAutoTranslateBlocked] = useState(false);
@@ -120,11 +126,12 @@ function App() {
   const pdfPrefetchQueue = useRef<Paper[]>([]);
   const pdfPrefetchBusy = useRef(false);
 
-  const queue = useMemo(
-    () => [...papers].sort((a, b) => Number(hasSeenPaper(a)) - Number(hasSeenPaper(b))),
-    [papers]
-  );
-  const currentPaper = queue[cursor] || queue[0] || null;
+  const queue = useMemo(() => {
+    const byId = new Map(papers.map((paper) => [paper.id, paper]));
+    const ids = reviewQueueIds.length ? reviewQueueIds : buildReviewQueueIds(papers);
+    return ids.map((id) => byId.get(id)).filter((paper): paper is Paper => Boolean(paper));
+  }, [papers, reviewQueueIds]);
+  const currentPaper = cursor < queue.length ? queue[cursor] : null;
 
   const stats = useMemo(() => {
     const saved = papers.filter((paper) => paper.favoriteAt).length;
@@ -153,6 +160,7 @@ function App() {
       setError("");
       const response = await fetchPapers(force);
       setPapers(response.papers);
+      setReviewQueueIds(buildReviewQueueIds(response.papers));
       setPreferences(response.preferences);
       setFavoriteFolders(response.favoriteFolders?.length ? response.favoriteFolders : [defaultFolder]);
       setLastFetchAt(response.lastFetchAt);
@@ -185,7 +193,7 @@ function App() {
   }, [tab, loadFavorites]);
 
   useEffect(() => {
-    if (cursor >= queue.length) setCursor(Math.max(0, queue.length - 1));
+    if (cursor > queue.length) setCursor(queue.length);
   }, [cursor, queue.length]);
 
   useEffect(() => {
@@ -234,10 +242,12 @@ function App() {
   }, []);
 
   async function handleAction(paper: Paper, action: PaperAction) {
-    setLastAction(paper);
     try {
       const response = await sendAction(paper.id, action, action === "favorite" ? activeFolderId : undefined);
       applyPaper(response.paper);
+      if (action === "favorite" || action === "skip") {
+        setCursor((value) => Math.min(value + 1, reviewQueueIds.length || queue.length));
+      }
       if (action === "favorite") showToast({ tone: "ok", text: `已收藏到「${folderName(favoriteFolders, activeFolderId)}」` });
       if (action === "skip") showToast({ tone: "warn", text: "已略过" });
       if (action === "clear") showToast({ tone: "ok", text: "已移出" });
@@ -247,9 +257,7 @@ function App() {
   }
 
   async function handleUndo() {
-    if (!lastAction) return;
-    await handleAction(lastAction, "clear");
-    setLastAction(null);
+    setCursor((value) => Math.max(0, value - 1));
   }
 
   async function handleTranslate(paper: Paper, force = false, silent = false) {
@@ -311,6 +319,7 @@ function App() {
       setRefreshing(true);
       const response = await savePreferences(preferences);
       setPapers(response.papers);
+      setReviewQueueIds(buildReviewQueueIds(response.papers));
       setFavoriteFolders(response.favoriteFolders?.length ? response.favoriteFolders : [defaultFolder]);
       setLastFetchAt(response.lastFetchAt);
       setLastError(response.lastError);
@@ -432,7 +441,7 @@ function App() {
               onPdf={setPdfPaper}
               onOriginal={setOriginalPaper}
               onSettings={() => setTab("settings")}
-              canUndo={Boolean(lastAction)}
+              canUndo={cursor > 0}
             />
           ) : null}
 
@@ -637,7 +646,7 @@ function TodayView({
         <button className="round-action reject" type="button" onClick={() => onAction(currentPaper, "skip")} title="略过">
           <ArrowUp size={24} />
         </button>
-        <button className="round-action neutral" type="button" onClick={onUndo} disabled={!canUndo} title="撤销">
+        <button className="round-action neutral" type="button" onClick={onUndo} disabled={!canUndo} title="上一条">
           <RotateCcw size={22} />
         </button>
         <button className="round-action accept" type="button" onClick={() => onAction(currentPaper, "favorite")} title="收藏">

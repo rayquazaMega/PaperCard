@@ -1,6 +1,6 @@
 # PaperCard Goal
 
-Last updated: 2026-06-01
+Last updated: 2026-06-02
 
 ## Product Vision
 
@@ -33,6 +33,9 @@ The current native app delivers:
 - Direct Agnes translation calls in personal-key mode.
 - A large-card native reading UI with bottom Today/Favorites/Settings navigation.
 - Native PDF download, cache, rendering, gesture-friendly reading, app-private saving, and PDF sharing through a restricted content provider.
+- A stable review queue model: sync builds an ordered queue once, favorite/skip advances the pointer, and previous-card navigation moves the pointer back instead of undoing the action.
+- Serial background work: automatic translation and PDF prefetch should process one item at a time and skip already-seen papers.
+- The Original action should show the English title/abstract in-app first; opening arXiv externally is a secondary action.
 
 The Web + Node prototype remains in the workspace as a development reference, not as the phone runtime.
 
@@ -395,11 +398,29 @@ For native migration changes, additionally verify:
 - No real user accounts yet.
 - No cross-device sync yet.
 - The Web prototype still depends on the Node backend, but the Android APK does not.
+- The desktop/Web prototype should preserve its current UI and interaction feel; when native behavior is ported back, prefer logic-only changes unless the user asks for visual revisions.
 - Native storage is currently lightweight JSON in private app storage; Room/SQLite would be more robust for a broader release.
 - Translation cache is local and has no invalidation policy beyond force refresh.
 - Recommendation scoring is simple keyword/category/recency weighting, not a learned model.
 - Only arXiv is implemented right now, though the product direction may later include bioRxiv, medRxiv, and other preprint sources.
 - arXiv may rate-limit direct refreshes; failures should stay visible and non-fatal.
+
+## Mainland China arXiv Access Notes
+
+Mirror availability appears inconsistent and should be treated as an optional acceleration layer rather than a hard dependency.
+
+Known candidates found during research:
+
+- `http://xxx.itp.ac.cn` is frequently cited as a Chinese Academy of Sciences / ITP arXiv mirror. Common rewrite examples replace `https://arxiv.org/abs/...` with `http://xxx.itp.ac.cn/abs/...` and PDF links with `http://xxx.itp.ac.cn/pdf/<paper-id>.pdf`.
+- `http://cn.arxiv.org` is listed by several university/library resources as a China mirror, but third-party status pages and user reports suggest availability varies.
+- `http://arxiv.las.ac.cn` is reported by DNS/status resources as an arXiv mirror hosted under `las.ac.cn` with China IP records, but app integration should verify live PDF availability before depending on it.
+
+Product guidance:
+
+- Keep `https://arxiv.org` as the canonical source and stored paper URL.
+- If mirror support is added, expose it as a PDF download preference/fallback list, not as a replacement for metadata sync.
+- Try mirrors only for PDF fetches after canonical arXiv fails or is slow, and keep per-host timeout/backoff to avoid rapid retries.
+- Cache successful PDFs locally so seen papers do not trigger repeat network downloads.
 
 ## Suggested Roadmap
 
