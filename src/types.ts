@@ -23,6 +23,41 @@ export interface Paper {
   translation: Translation | null;
 }
 
+export interface PaperImage {
+  url: string;
+  alt: string;
+  caption: string;
+}
+
+export interface PaperHtmlResponse {
+  paperId: string;
+  readerId: string;
+  sourceUrl: string;
+  fetchedAt: string | null;
+  htmlLength: number;
+  images: PaperImage[];
+  imageTruncated: boolean;
+  html?: string;
+  htmlTruncated?: boolean;
+}
+
+export interface DeepReadMessage {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  createdAt: string;
+  paperIds?: string[];
+}
+
+export interface DeepReadThread {
+  id: string;
+  title: string;
+  paperIds: string[];
+  messages: DeepReadMessage[];
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface FavoriteFolder {
   id: string;
   name: string;
@@ -50,4 +85,12 @@ export interface TranslateResponse {
   paperId: string;
   translatedAt: string;
   translation: Translation;
+}
+
+export interface DeepReadChatResponse {
+  message: {
+    role: "assistant";
+    content: string;
+    createdAt: string;
+  };
 }

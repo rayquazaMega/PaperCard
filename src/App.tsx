@@ -1,7 +1,8 @@
-import {
+﻿import {
   ArrowDownToLine,
   ArrowRight,
   ArrowUp,
+  Bot,
   BookOpen,
   Bookmark,
   BookmarkCheck,
@@ -9,18 +10,24 @@ import {
   ChevronLeft,
   ChevronRight,
   ExternalLink,
+  FileCode2,
   FileText,
   Folder,
   FolderPlus,
+  Images,
   Languages,
   Loader2,
+  MessageSquareText,
+  Paperclip,
   Plus,
   RefreshCw,
   RotateCcw,
   Search,
+  Send,
   Settings,
   SlidersHorizontal,
   Sparkles,
+  SquarePlus,
   Trash2,
   X
 } from "lucide-react";
@@ -28,8 +35,10 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { getDocument, GlobalWorkerOptions, type PDFDocumentProxy, type RenderTask } from "pdfjs-dist";
 import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.mjs?url";
 import {
+  chatDeepRead,
   createFavoriteFolder,
   deleteFavoriteFolder,
+  fetchPaperHtml,
   fetchFavorites,
   fetchPapers,
   getApiBase,
@@ -39,7 +48,7 @@ import {
   setApiBase,
   translatePaper
 } from "./api";
-import type { FavoriteFolder, Paper, Preferences, Translation } from "./types";
+import type { DeepReadMessage, DeepReadThread, FavoriteFolder, Paper, PaperHtmlResponse, Preferences, Translation } from "./types";
 
 GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 
@@ -59,7 +68,7 @@ const defaultFolder: FavoriteFolder = {
 
 const categories = ["cs.AI", "cs.CL", "cs.LG", "cs.CV", "cs.RO", "stat.ML", "math.OC", "q-bio.NC"];
 
-type Tab = "today" | "favorites" | "settings";
+type Tab = "today" | "favorites" | "settings" | "deepRead";
 type Toast = { tone: "ok" | "warn"; text: string } | null;
 type PaperAction = "favorite" | "skip" | "clear";
 
@@ -98,6 +107,18 @@ function folderName(folders: FavoriteFolder[], folderId: string) {
   return folders.find((folder) => folder.id === folderId)?.name || defaultFolder.name;
 }
 
+function makeId(prefix: string) {
+  return `${prefix}-${crypto.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`}`;
+}
+
+function shortTitle(value: string, limit = 28) {
+  return value.length > limit ? `${value.slice(0, limit)}...` : value;
+}
+
+function mergePaperIds(...groups: string[][]) {
+  return groups.flat().filter((id, index, list) => id && list.indexOf(id) === index).slice(0, 6);
+}
+
 function App() {
   const [papers, setPapers] = useState<Paper[]>([]);
   const [favorites, setFavorites] = useState<Paper[]>([]);
@@ -121,10 +142,20 @@ function App() {
   const [keywordDraft, setKeywordDraft] = useState("");
   const [apiDraft, setApiDraft] = useState(getApiBase());
   const [autoTranslateBlocked, setAutoTranslateBlocked] = useState(false);
+  const [htmlByPaperId, setHtmlByPaperId] = useState<Record<string, PaperHtmlResponse>>({});
+  const [htmlLoadingIds, setHtmlLoadingIds] = useState<Set<string>>(() => new Set());
+  const [deepReadThreads, setDeepReadThreads] = useState<DeepReadThread[]>([]);
+  const [activeDeepReadThreadId, setActiveDeepReadThreadId] = useState("");
+  const [deepReadDraft, setDeepReadDraft] = useState("");
+  const [deepReadSelectedIds, setDeepReadSelectedIds] = useState<Set<string>>(() => new Set());
+  const [deepReadBusyIds, setDeepReadBusyIds] = useState<Set<string>>(() => new Set());
   const autoTranslateTried = useRef<Set<string>>(new Set());
   const pdfPrefetchTried = useRef<Set<string>>(new Set());
   const pdfPrefetchQueue = useRef<Paper[]>([]);
   const pdfPrefetchBusy = useRef(false);
+  const htmlPrefetchTried = useRef<Set<string>>(new Set());
+  const htmlPrefetchQueue = useRef<Paper[]>([]);
+  const htmlPrefetchBusy = useRef(false);
 
   const queue = useMemo(() => {
     const byId = new Map(papers.map((paper) => [paper.id, paper]));
@@ -132,6 +163,11 @@ function App() {
     return ids.map((id) => byId.get(id)).filter((paper): paper is Paper => Boolean(paper));
   }, [papers, reviewQueueIds]);
   const currentPaper = cursor < queue.length ? queue[cursor] : null;
+  const paperById = useMemo(() => new Map([...papers, ...favorites].map((paper) => [paper.id, paper])), [papers, favorites]);
+  const activeDeepReadThread = useMemo(
+    () => deepReadThreads.find((thread) => thread.id === activeDeepReadThreadId) || deepReadThreads[0] || null,
+    [activeDeepReadThreadId, deepReadThreads]
+  );
 
   const stats = useMemo(() => {
     const saved = papers.filter((paper) => paper.favoriteAt).length;
@@ -189,7 +225,7 @@ function App() {
   }, [load]);
 
   useEffect(() => {
-    if (tab === "favorites") loadFavorites();
+    if (tab === "favorites" || tab === "deepRead") loadFavorites();
   }, [tab, loadFavorites]);
 
   useEffect(() => {
@@ -240,6 +276,61 @@ function App() {
         pumpPdfPrefetch();
       });
   }, []);
+
+  const loadPaperHtml = useCallback(
+    async (paper: Paper, includeHtml = false, silent = true) => {
+      const existing = htmlByPaperId[paper.id];
+      if (existing?.html || (!includeHtml && existing)) return existing;
+
+      try {
+        setHtmlLoadingIds((value) => new Set(value).add(paper.id));
+        const response = await fetchPaperHtml(paper.readerId, includeHtml);
+        setHtmlByPaperId((value) => ({
+          ...value,
+          [paper.id]: {
+            ...(value[paper.id] || {}),
+            ...response,
+            html: response.html || value[paper.id]?.html
+          }
+        }));
+        return response;
+      } catch (htmlError) {
+        if (!silent) showToast({ tone: "warn", text: htmlError instanceof Error ? htmlError.message : String(htmlError) });
+        return null;
+      } finally {
+        setHtmlLoadingIds((value) => {
+          const next = new Set(value);
+          next.delete(paper.id);
+          return next;
+        });
+      }
+    },
+    [htmlByPaperId, showToast]
+  );
+
+  const pumpHtmlPrefetch = useCallback(() => {
+    if (htmlPrefetchBusy.current) return;
+    const paper = htmlPrefetchQueue.current.shift();
+    if (!paper) return;
+    htmlPrefetchBusy.current = true;
+    void loadPaperHtml(paper, false, true).finally(() => {
+      htmlPrefetchBusy.current = false;
+      pumpHtmlPrefetch();
+    });
+  }, [loadPaperHtml]);
+
+  useEffect(() => {
+    queue.slice(cursor, cursor + 4).forEach((paper) => {
+      if (htmlPrefetchTried.current.has(paper.id)) return;
+      htmlPrefetchTried.current.add(paper.id);
+      htmlPrefetchQueue.current.push(paper);
+    });
+    pumpHtmlPrefetch();
+  }, [cursor, queue, pumpHtmlPrefetch]);
+
+  useEffect(() => {
+    if (currentPaper) void loadPaperHtml(currentPaper, false, true);
+  }, [currentPaper, loadPaperHtml]);
 
   async function handleAction(paper: Paper, action: PaperAction) {
     try {
@@ -365,6 +456,139 @@ function App() {
     void load(true);
   }
 
+  function toggleDeepReadSelection(paperId: string) {
+    setDeepReadSelectedIds((value) => {
+      const next = new Set(value);
+      if (next.has(paperId)) next.delete(paperId);
+      else next.add(paperId);
+      return next;
+    });
+  }
+
+  function replaceDeepReadThread(thread: DeepReadThread) {
+    setDeepReadThreads((threads) => [thread, ...threads.filter((item) => item.id !== thread.id)]);
+    setActiveDeepReadThreadId(thread.id);
+  }
+
+  async function askDeepReadAssistant(thread: DeepReadThread) {
+    setDeepReadBusyIds((value) => new Set(value).add(thread.id));
+    try {
+      const response = await chatDeepRead(
+        thread.paperIds,
+        thread.messages.map((message) => ({ role: message.role, content: message.content }))
+      );
+      const assistantMessage: DeepReadMessage = {
+        id: makeId("message"),
+        role: "assistant",
+        content: response.message.content,
+        createdAt: response.message.createdAt
+      };
+      replaceDeepReadThread({
+        ...thread,
+        messages: [...thread.messages, assistantMessage],
+        updatedAt: response.message.createdAt
+      });
+    } catch (chatError) {
+      showToast({ tone: "warn", text: chatError instanceof Error ? chatError.message : String(chatError) });
+    } finally {
+      setDeepReadBusyIds((value) => {
+        const next = new Set(value);
+        next.delete(thread.id);
+        return next;
+      });
+    }
+  }
+
+  function createDeepReadThread(seedPapers: Paper[], prompt?: string) {
+    const selected = seedPapers.filter(Boolean).slice(0, 6);
+    if (!selected.length) {
+      showToast({ tone: "warn", text: "请选择收藏论文" });
+      return;
+    }
+
+    selected.forEach((paper) => void loadPaperHtml(paper, true, true));
+    const now = new Date().toISOString();
+    const paperIds = mergePaperIds(selected.map((paper) => paper.id));
+    const message: DeepReadMessage = {
+      id: makeId("message"),
+      role: "user",
+      content:
+        prompt ||
+        (selected.length > 1
+          ? "请先对这些论文做对照精读，概括共同问题、方法差异和进一步追问点。"
+          : "请先精读这篇论文，概括核心问题、方法、结论和可以继续追问的点。"),
+      createdAt: now,
+      paperIds
+    };
+    const thread: DeepReadThread = {
+      id: makeId("thread"),
+      title: shortTitle(selected[0].translation?.title_zh || selected[0].title),
+      paperIds,
+      messages: [message],
+      createdAt: now,
+      updatedAt: now
+    };
+    replaceDeepReadThread(thread);
+    setDeepReadSelectedIds(new Set());
+    setTab("deepRead");
+    void askDeepReadAssistant(thread);
+  }
+
+  function addPapersToActiveThread(seedPapers: Paper[]) {
+    const selected = seedPapers.filter(Boolean).slice(0, 6);
+    if (!selected.length) {
+      showToast({ tone: "warn", text: "请选择收藏论文" });
+      return;
+    }
+    if (!activeDeepReadThread) {
+      createDeepReadThread(selected);
+      return;
+    }
+
+    selected.forEach((paper) => void loadPaperHtml(paper, true, true));
+    const now = new Date().toISOString();
+    const paperIds = mergePaperIds(activeDeepReadThread.paperIds, selected.map((paper) => paper.id));
+    const message: DeepReadMessage = {
+      id: makeId("message"),
+      role: "user",
+      content:
+        selected.length > 1
+          ? "请把这些论文纳入当前讨论，并给出它们与已有论文之间的关联。"
+          : "请把这篇论文纳入当前讨论，并说明它和已有论文的联系。",
+      createdAt: now,
+      paperIds: selected.map((paper) => paper.id)
+    };
+    const thread = {
+      ...activeDeepReadThread,
+      paperIds,
+      messages: [...activeDeepReadThread.messages, message],
+      updatedAt: now
+    };
+    replaceDeepReadThread(thread);
+    setDeepReadSelectedIds(new Set());
+    void askDeepReadAssistant(thread);
+  }
+
+  function handleDeepReadSubmit() {
+    const content = deepReadDraft.trim();
+    if (!content || !activeDeepReadThread || deepReadBusyIds.has(activeDeepReadThread.id)) return;
+    const now = new Date().toISOString();
+    const message: DeepReadMessage = {
+      id: makeId("message"),
+      role: "user",
+      content,
+      createdAt: now
+    };
+    const thread = {
+      ...activeDeepReadThread,
+      messages: [...activeDeepReadThread.messages, message],
+      updatedAt: now
+    };
+    replaceDeepReadThread(thread);
+    setDeepReadDraft("");
+    void askDeepReadAssistant(thread);
+  }
+
   return (
     <div className="app-shell">
       <header className="topbar">
@@ -382,6 +606,7 @@ function App() {
           <TabButton active={tab === "today"} icon={<BookOpen size={17} />} label="今日" onClick={() => setTab("today")} />
           <TabButton active={tab === "favorites"} icon={<BookmarkCheck size={17} />} label="收藏" onClick={() => setTab("favorites")} />
           <TabButton active={tab === "settings"} icon={<SlidersHorizontal size={17} />} label="偏好" onClick={() => setTab("settings")} />
+          <TabButton active={tab === "deepRead"} icon={<MessageSquareText size={17} />} label="精读" onClick={() => setTab("deepRead")} />
         </nav>
 
         <button className="icon-button" type="button" onClick={() => load(true)} disabled={refreshing} title="同步">
@@ -433,6 +658,8 @@ function App() {
               remaining={queue.length}
               total={papers.length}
               translatingIds={translatingIds}
+              htmlByPaperId={htmlByPaperId}
+              htmlLoadingIds={htmlLoadingIds}
               onActiveFolder={setActiveFolderId}
               onRefresh={() => load(true)}
               onAction={handleAction}
@@ -459,6 +686,7 @@ function App() {
               onPdf={setPdfPaper}
               onClear={(paper) => handleAction(paper, "clear")}
               onTranslate={handleTranslate}
+              onDeepRead={(paper) => createDeepReadThread([paper])}
             />
           ) : null}
 
@@ -477,6 +705,31 @@ function App() {
               onApiDraft={setApiDraft}
               onSaveApiBase={saveApiBase}
               onSave={handleSavePreferences}
+            />
+          ) : null}
+
+          {tab === "deepRead" ? (
+            <DeepReadView
+              favorites={favorites}
+              threads={deepReadThreads}
+              activeThread={activeDeepReadThread}
+              selectedIds={deepReadSelectedIds}
+              paperById={paperById}
+              htmlByPaperId={htmlByPaperId}
+              htmlLoadingIds={htmlLoadingIds}
+              draft={deepReadDraft}
+              busy={Boolean(activeDeepReadThread && deepReadBusyIds.has(activeDeepReadThread.id))}
+              onSelectThread={setActiveDeepReadThreadId}
+              onTogglePaper={toggleDeepReadSelection}
+              onDraft={setDeepReadDraft}
+              onCreateThread={() =>
+                createDeepReadThread(favorites.filter((paper) => deepReadSelectedIds.has(paper.id)))
+              }
+              onAddToThread={() =>
+                addPapersToActiveThread(favorites.filter((paper) => deepReadSelectedIds.has(paper.id)))
+              }
+              onSubmit={handleDeepReadSubmit}
+              onNeedHtml={(paper) => loadPaperHtml(paper, true, false)}
             />
           ) : null}
         </section>
@@ -501,6 +754,7 @@ function App() {
         <TabButton active={tab === "today"} icon={<BookOpen size={18} />} label="今日" onClick={() => setTab("today")} />
         <TabButton active={tab === "favorites"} icon={<Bookmark size={18} />} label="收藏" onClick={() => setTab("favorites")} />
         <TabButton active={tab === "settings"} icon={<Settings size={18} />} label="偏好" onClick={() => setTab("settings")} />
+        <TabButton active={tab === "deepRead"} icon={<MessageSquareText size={18} />} label="精读" onClick={() => setTab("deepRead")} />
       </nav>
 
       {pdfPaper ? <PdfModal paper={pdfPaper} onClose={() => setPdfPaper(null)} /> : null}
@@ -538,6 +792,8 @@ interface TodayViewProps {
   remaining: number;
   total: number;
   translatingIds: Set<string>;
+  htmlByPaperId: Record<string, PaperHtmlResponse>;
+  htmlLoadingIds: Set<string>;
   canUndo: boolean;
   onActiveFolder: (folderId: string) => void;
   onRefresh: () => void;
@@ -559,6 +815,8 @@ function TodayView({
   remaining,
   total,
   translatingIds,
+  htmlByPaperId,
+  htmlLoadingIds,
   canUndo,
   onActiveFolder,
   onRefresh,
@@ -637,6 +895,8 @@ function TodayView({
         key={currentPaper.id}
         paper={currentPaper}
         translating={translatingIds.has(currentPaper.id)}
+        htmlSummary={htmlByPaperId[currentPaper.id]}
+        htmlLoading={htmlLoadingIds.has(currentPaper.id)}
         onAction={onAction}
         onTranslate={onTranslate}
         onPdf={onPdf}
@@ -660,13 +920,15 @@ function TodayView({
 interface PaperCardProps {
   paper: Paper;
   translating: boolean;
+  htmlSummary?: PaperHtmlResponse;
+  htmlLoading: boolean;
   onAction: (paper: Paper, action: PaperAction) => Promise<void>;
   onTranslate: (paper: Paper, force?: boolean, silent?: boolean) => Promise<void>;
   onPdf: (paper: Paper) => void;
   onOriginal: (paper: Paper) => void;
 }
 
-function PaperCard({ paper, translating, onAction, onTranslate, onPdf, onOriginal }: PaperCardProps) {
+function PaperCard({ paper, translating, htmlSummary, htmlLoading, onAction, onTranslate, onPdf, onOriginal }: PaperCardProps) {
   const [start, setStart] = useState<{ x: number; y: number } | null>(null);
   const [drag, setDrag] = useState({ x: 0, y: 0 });
   const rotation = drag.x / 24;
@@ -731,7 +993,48 @@ function PaperCard({ paper, translating, onAction, onTranslate, onPdf, onOrigina
           原文
         </button>
       </div>
+
+      <PaperFigureStrip summary={htmlSummary} loading={htmlLoading} />
     </article>
+  );
+}
+
+function PaperFigureStrip({ summary, loading }: { summary?: PaperHtmlResponse; loading: boolean }) {
+  if (loading && !summary) {
+    return (
+      <div className="figure-strip-state">
+        <Loader2 className="spin" size={15} />
+        <span>解析 HTML 图片</span>
+      </div>
+    );
+  }
+
+  if (!summary) return null;
+
+  if (!summary.images.length) {
+    return (
+      <div className="figure-strip-state">
+        <Images size={15} />
+        <span>HTML 中未找到图片</span>
+      </div>
+    );
+  }
+
+  return (
+    <div className="figure-strip" aria-label="论文图片">
+      <div className="figure-strip-head">
+        <Images size={15} />
+        <span>{summary.images.length} 张图片</span>
+      </div>
+      <div className="figure-scroll" onPointerDown={(event) => event.stopPropagation()}>
+        {summary.images.map((image) => (
+          <a className="figure-thumb" href={image.url} target="_blank" rel="noreferrer" key={image.url} title={image.caption || image.alt || "论文图片"}>
+            <img src={image.url} alt={image.alt || image.caption || "论文图片"} loading="lazy" referrerPolicy="no-referrer" />
+            {image.caption ? <span>{image.caption}</span> : null}
+          </a>
+        ))}
+      </div>
+    </div>
   );
 }
 
@@ -762,6 +1065,7 @@ interface FavoritesViewProps {
   onPdf: (paper: Paper) => void;
   onClear: (paper: Paper) => Promise<void>;
   onTranslate: (paper: Paper, force?: boolean, silent?: boolean) => Promise<void>;
+  onDeepRead: (paper: Paper) => void;
 }
 
 function FavoritesView({
@@ -776,7 +1080,8 @@ function FavoritesView({
   onDeleteFolder,
   onPdf,
   onClear,
-  onTranslate
+  onTranslate,
+  onDeepRead
 }: FavoritesViewProps) {
   return (
     <div className="library">
@@ -844,6 +1149,10 @@ function FavoritesView({
                 <p>{authorLine(paper)}</p>
               </div>
               <div className="favorite-actions">
+                <button className="soft-button favorite-ai" type="button" onClick={() => onDeepRead(paper)}>
+                  <MessageSquareText size={17} />
+                  AI精读
+                </button>
                 <button className="icon-button" type="button" onClick={() => onTranslate(paper, Boolean(paper.translation))} title="翻译">
                   {translatingIds.has(paper.id) ? <Loader2 className="spin" size={17} /> : <Languages size={17} />}
                 </button>
@@ -864,6 +1173,263 @@ function FavoritesView({
         </div>
       )}
     </div>
+  );
+}
+
+interface DeepReadViewProps {
+  favorites: Paper[];
+  threads: DeepReadThread[];
+  activeThread: DeepReadThread | null;
+  selectedIds: Set<string>;
+  paperById: Map<string, Paper>;
+  htmlByPaperId: Record<string, PaperHtmlResponse>;
+  htmlLoadingIds: Set<string>;
+  draft: string;
+  busy: boolean;
+  onSelectThread: (threadId: string) => void;
+  onTogglePaper: (paperId: string) => void;
+  onDraft: (value: string) => void;
+  onCreateThread: () => void;
+  onAddToThread: () => void;
+  onSubmit: () => void;
+  onNeedHtml: (paper: Paper) => Promise<PaperHtmlResponse | null>;
+}
+
+function DeepReadView({
+  favorites,
+  threads,
+  activeThread,
+  selectedIds,
+  paperById,
+  htmlByPaperId,
+  htmlLoadingIds,
+  draft,
+  busy,
+  onSelectThread,
+  onTogglePaper,
+  onDraft,
+  onCreateThread,
+  onAddToThread,
+  onSubmit,
+  onNeedHtml
+}: DeepReadViewProps) {
+  const selectedCount = selectedIds.size;
+
+  return (
+    <div className="deep-read-view">
+      <aside className="deep-sidebar">
+        <div className="section-head tight">
+          <div>
+            <p className="eyebrow">精读</p>
+            <h2>聊天窗口</h2>
+          </div>
+          <button className="icon-button" type="button" onClick={onCreateThread} disabled={!selectedCount} title="新建精读">
+            <SquarePlus size={18} />
+          </button>
+        </div>
+
+        {threads.length ? (
+          <div className="thread-list">
+            {threads.map((thread) => (
+              <button
+                className={`thread-item ${activeThread?.id === thread.id ? "active" : ""}`}
+                type="button"
+                key={thread.id}
+                onClick={() => onSelectThread(thread.id)}
+              >
+                <span>{thread.paperIds.length} 篇</span>
+                <strong>{thread.title}</strong>
+              </button>
+            ))}
+          </div>
+        ) : null}
+
+        <section className="favorite-picker">
+          <div className="panel-title">
+            <BookmarkCheck size={16} />
+            <span>收藏论文</span>
+          </div>
+          <div className="favorite-picker-list">
+            {favorites.map((paper) => (
+              <label className="paper-choice" key={paper.id}>
+                <input type="checkbox" checked={selectedIds.has(paper.id)} onChange={() => onTogglePaper(paper.id)} />
+                <span>
+                  <small>{paper.category}</small>
+                  <strong>{paper.translation?.title_zh || paper.title}</strong>
+                </span>
+              </label>
+            ))}
+            {!favorites.length ? <p className="empty-copy">这里还没有收藏</p> : null}
+          </div>
+          <button className="soft-button attach-selected" type="button" onClick={onAddToThread} disabled={!selectedCount}>
+            <Paperclip size={17} />
+            纳入当前
+          </button>
+        </section>
+      </aside>
+
+      <section className="chat-panel">
+        {activeThread ? (
+          <>
+            <header className="chat-header">
+              <div>
+                <p className="eyebrow">AI 精读</p>
+                <h2>{activeThread.title}</h2>
+              </div>
+              <span>{activeThread.paperIds.length} 篇 HTML</span>
+            </header>
+            <div className="chat-log">
+              {activeThread.messages.map((message) => (
+                <ChatMessage
+                  key={message.id}
+                  message={message}
+                  paperById={paperById}
+                  htmlByPaperId={htmlByPaperId}
+                  htmlLoadingIds={htmlLoadingIds}
+                  onNeedHtml={onNeedHtml}
+                />
+              ))}
+              {busy ? (
+                <div className="chat-message assistant">
+                  <div className="chat-avatar">
+                    <Bot size={16} />
+                  </div>
+                  <div className="chat-bubble pending">
+                    <Loader2 className="spin" size={16} />
+                    <span>正在精读</span>
+                  </div>
+                </div>
+              ) : null}
+            </div>
+            <form
+              className="chat-composer"
+              onSubmit={(event) => {
+                event.preventDefault();
+                onSubmit();
+              }}
+            >
+              <textarea
+                value={draft}
+                onChange={(event) => onDraft(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" && !event.shiftKey) {
+                    event.preventDefault();
+                    onSubmit();
+                  }
+                }}
+                maxLength={1200}
+                placeholder="继续追问论文细节"
+                disabled={busy}
+              />
+              <button className="primary-button chat-send" type="submit" disabled={!draft.trim() || busy} title="发送">
+                {busy ? <Loader2 className="spin" size={17} /> : <Send size={17} />}
+              </button>
+            </form>
+          </>
+        ) : (
+          <div className="center-state small deep-empty">
+            <MessageSquareText size={30} />
+            <strong>精读窗口</strong>
+            <span>选择收藏论文即可开始</span>
+          </div>
+        )}
+      </section>
+    </div>
+  );
+}
+
+function ChatMessage({
+  message,
+  paperById,
+  htmlByPaperId,
+  htmlLoadingIds,
+  onNeedHtml
+}: {
+  message: DeepReadMessage;
+  paperById: Map<string, Paper>;
+  htmlByPaperId: Record<string, PaperHtmlResponse>;
+  htmlLoadingIds: Set<string>;
+  onNeedHtml: (paper: Paper) => Promise<PaperHtmlResponse | null>;
+}) {
+  return (
+    <div className={`chat-message ${message.role}`}>
+      {message.role === "assistant" ? (
+        <div className="chat-avatar">
+          <Bot size={16} />
+        </div>
+      ) : null}
+      <div className="chat-bubble">
+        {message.paperIds?.length ? (
+          <div className="message-attachments">
+            {message.paperIds.map((paperId) => {
+              const paper = paperById.get(paperId);
+              return paper ? (
+                <PaperAttachment
+                  key={paperId}
+                  paper={paper}
+                  summary={htmlByPaperId[paperId]}
+                  loading={htmlLoadingIds.has(paperId)}
+                  onNeedHtml={onNeedHtml}
+                />
+              ) : null;
+            })}
+          </div>
+        ) : null}
+        {message.content ? <p>{message.content}</p> : null}
+      </div>
+    </div>
+  );
+}
+
+function PaperAttachment({
+  paper,
+  summary,
+  loading,
+  onNeedHtml
+}: {
+  paper: Paper;
+  summary?: PaperHtmlResponse;
+  loading: boolean;
+  onNeedHtml: (paper: Paper) => Promise<PaperHtmlResponse | null>;
+}) {
+  const [open, setOpen] = useState(false);
+
+  useEffect(() => {
+    if (open && !summary?.html && !loading) void onNeedHtml(paper);
+  }, [open, paper, summary?.html, loading, onNeedHtml]);
+
+  return (
+    <details
+      className="html-attachment"
+      onToggle={(event) => {
+        setOpen(event.currentTarget.open);
+      }}
+    >
+      <summary>
+        <FileCode2 size={16} />
+        <span>
+          <strong>{paper.translation?.title_zh || paper.title}</strong>
+          <small>
+            HTML
+            {summary ? ` · ${Math.max(1, Math.round(summary.htmlLength / 1024))} KB · ${summary.images.length} 图` : ""}
+          </small>
+        </span>
+      </summary>
+      <div className="html-preview">
+        {loading && !summary?.html ? (
+          <span className="attachment-loading">
+            <Loader2 className="spin" size={15} />
+            读取 HTML
+          </span>
+        ) : null}
+        {summary?.sourceUrl ? (
+          <a href={summary.sourceUrl} target="_blank" rel="noreferrer">
+            打开 HTML 来源
+          </a>
+        ) : null}
+        {summary?.html ? <pre>{summary.htmlTruncated ? `${summary.html}\n...` : summary.html}</pre> : null}
+      </div>
+    </details>
   );
 }
 

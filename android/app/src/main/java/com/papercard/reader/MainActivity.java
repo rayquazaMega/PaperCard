@@ -6,12 +6,16 @@ import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.Intent;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 import android.graphics.Color;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.Environment;
+import android.text.Editable;
 import android.text.InputType;
+import android.text.TextWatcher;
 import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
@@ -21,6 +25,8 @@ import android.widget.Button;
 import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.FrameLayout;
+import android.widget.HorizontalScrollView;
+import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ProgressBar;
 import android.widget.ScrollView;
@@ -30,8 +36,13 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 import java.io.File;
+import java.io.BufferedInputStream;
+import java.net.HttpURLConnection;
+import java.net.URL;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
+import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -39,6 +50,7 @@ public class MainActivity extends Activity {
     private static final int TAB_TODAY = 0;
     private static final int TAB_FAVORITES = 1;
     private static final int TAB_SETTINGS = 2;
+    private static final int TAB_DEEP_READ = 3;
     private static final int COLOR_BG = 0xFFF0F3F6;
     private static final int COLOR_PANEL = 0xFFFFFEFA;
     private static final int COLOR_PANEL_SOFT = 0xFFF7F9F8;
@@ -53,14 +65,27 @@ public class MainActivity extends Activity {
     private final ExecutorService syncExecutor = Executors.newSingleThreadExecutor();
     private final ExecutorService translationExecutor = Executors.newSingleThreadExecutor();
     private final ExecutorService pdfPrefetchExecutor = Executors.newSingleThreadExecutor();
+    private final ExecutorService htmlExecutor = Executors.newSingleThreadExecutor();
+    private final ExecutorService deepReadExecutor = Executors.newSingleThreadExecutor();
+    private final ExecutorService imageExecutor = Executors.newFixedThreadPool(2);
     private final HashSet<String> autoTranslationTried = new HashSet<>();
     private final HashSet<String> translatingIds = new HashSet<>();
     private final HashSet<String> queuedTranslationIds = new HashSet<>();
     private final HashSet<String> queuedPdfIds = new HashSet<>();
+    private final HashSet<String> queuedHtmlIds = new HashSet<>();
+    private final HashSet<String> loadingHtmlIds = new HashSet<>();
+    private final HashMap<String, PaperHtml> htmlByPaperId = new HashMap<>();
+    private final HashMap<String, Bitmap> imageCache = new HashMap<>();
+    private final HashSet<String> loadingImageUrls = new HashSet<>();
+    private final ArrayList<DeepReadThread> deepReadThreads = new ArrayList<>();
+    private final HashSet<String> deepReadSelectedIds = new HashSet<>();
+    private final HashSet<String> busyDeepReadThreadIds = new HashSet<>();
     private LinearLayout root;
     private FrameLayout content;
     private final ArrayList<String> reviewQueueIds = new ArrayList<>();
     private int activeTab = TAB_TODAY;
+    private String activeDeepReadThreadId = "";
+    private String deepReadDraft = "";
     private int cursor = 0;
     private String activeFolderId = PaperModels.DEFAULT_FOLDER_ID;
     private String favoriteFilterId = "all";
@@ -82,6 +107,9 @@ public class MainActivity extends Activity {
         syncExecutor.shutdownNow();
         translationExecutor.shutdownNow();
         pdfPrefetchExecutor.shutdownNow();
+        htmlExecutor.shutdownNow();
+        deepReadExecutor.shutdownNow();
+        imageExecutor.shutdownNow();
         super.onDestroy();
     }
 
@@ -103,8 +131,10 @@ public class MainActivity extends Activity {
             renderToday();
         } else if (activeTab == TAB_FAVORITES) {
             renderFavorites();
-        } else {
+        } else if (activeTab == TAB_SETTINGS) {
             renderSettings();
+        } else {
+            renderDeepRead();
         }
     }
 
@@ -117,6 +147,7 @@ public class MainActivity extends Activity {
         tabs.addView(tabButton("今日", TAB_TODAY), weight());
         tabs.addView(tabButton("收藏", TAB_FAVORITES), weight());
         tabs.addView(tabButton("设置", TAB_SETTINGS), weight());
+        tabs.addView(tabButton("精读", TAB_DEEP_READ), weight());
         return tabs;
     }
 
@@ -232,6 +263,7 @@ public class MainActivity extends Activity {
         abstractView.setPadding(0, dp(12), 0, dp(8));
         body.addView(abstractView);
         if (paper.translation != null) body.addView(translationBlock(paper.translation));
+        body.addView(htmlFigureStrip(paper));
         scrollView.addView(body);
         card.addView(scrollView, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
 
@@ -390,6 +422,8 @@ public class MainActivity extends Activity {
         item.addView(title);
         item.addView(text(authorLine(paper), 13, COLOR_MUTED));
         LinearLayout tools = new LinearLayout(this);
+        Button ai = button("AI精读");
+        ai.setOnClickListener(view -> startDeepReadWithPapers(singlePaperList(paper)));
         Button translate = button("翻译");
         translate.setOnClickListener(view -> translatePaper(paper, true, false));
         Button pdf = button("PDF");
@@ -397,13 +431,210 @@ public class MainActivity extends Activity {
         Button remove = dangerButton("移出");
         remove.setOnClickListener(view -> {
             store.clearAction(paper);
-            render();
+                render();
         });
+        tools.addView(ai);
         tools.addView(translate);
         tools.addView(pdf);
         tools.addView(remove);
         item.addView(tools);
+        item.addView(htmlFigureStrip(paper));
         return item;
+    }
+
+    private void renderDeepRead() {
+        ScrollView scroll = scroll();
+        LinearLayout page = page();
+        scroll.addView(page);
+        content.addView(scroll);
+
+        page.addView(title("AI 精读"));
+        page.addView(deepReadPicker());
+        page.addView(deepReadThreadList());
+        page.addView(deepReadChatPanel());
+    }
+
+    private View deepReadPicker() {
+        LinearLayout box = panel();
+        box.addView(label("收藏论文"));
+        ArrayList<Paper> favorites = store.favoritePapers("all");
+        if (favorites.isEmpty()) {
+            box.addView(text("这里还没有收藏", 14, COLOR_MUTED));
+        } else {
+            for (Paper paper : favorites) {
+                CheckBox checkBox = new CheckBox(this);
+                checkBox.setText(shortTitle(paper.translation != null && !paper.translation.titleZh.isEmpty() ? paper.translation.titleZh : paper.title, 54));
+                checkBox.setTextColor(COLOR_INK);
+                checkBox.setTextSize(14);
+                checkBox.setChecked(deepReadSelectedIds.contains(paper.id));
+                checkBox.setOnCheckedChangeListener((button, checked) -> {
+                    if (checked) deepReadSelectedIds.add(paper.id);
+                    else deepReadSelectedIds.remove(paper.id);
+                    render();
+                });
+                box.addView(checkBox);
+            }
+        }
+
+        LinearLayout actions = new LinearLayout(this);
+        actions.setOrientation(LinearLayout.HORIZONTAL);
+        Button create = primaryButton("新建精读");
+        create.setEnabled(!deepReadSelectedIds.isEmpty());
+        create.setOnClickListener(view -> startDeepReadWithPapers(selectedFavoritePapers()));
+        Button attach = button("纳入当前");
+        attach.setEnabled(!deepReadSelectedIds.isEmpty());
+        attach.setOnClickListener(view -> addSelectedPapersToActiveThread());
+        actions.addView(create, compactWeight());
+        actions.addView(attach, compactWeight());
+        box.addView(actions);
+        return box;
+    }
+
+    private View deepReadThreadList() {
+        LinearLayout box = panel();
+        box.addView(label("聊天窗口"));
+        if (deepReadThreads.isEmpty()) {
+            box.addView(text("选择收藏论文即可开始", 14, COLOR_MUTED));
+            return box;
+        }
+        for (DeepReadThread thread : deepReadThreads) {
+            Button button = button(thread.paperIds.size() + " 篇 · " + thread.title);
+            button.setTextColor(thread.id.equals(activeDeepReadThreadId) ? Color.WHITE : COLOR_INK);
+            button.setBackground(cardBackground(thread.id.equals(activeDeepReadThreadId) ? COLOR_INK : COLOR_PANEL_SOFT, COLOR_LINE, dp(8)));
+            button.setOnClickListener(view -> {
+                activeDeepReadThreadId = thread.id;
+                render();
+            });
+            box.addView(button);
+        }
+        return box;
+    }
+
+    private View deepReadChatPanel() {
+        LinearLayout box = panel();
+        DeepReadThread thread = activeDeepReadThread();
+        if (thread == null) {
+            box.setMinimumHeight(dp(220));
+            box.setGravity(Gravity.CENTER);
+            box.addView(text("精读窗口", 18, COLOR_INK));
+            box.addView(text("从收藏页点 AI精读，或在这里多选收藏论文。", 14, COLOR_MUTED));
+            return box;
+        }
+
+        LinearLayout header = new LinearLayout(this);
+        header.setGravity(Gravity.CENTER_VERTICAL);
+        TextView heading = label(thread.title);
+        header.addView(heading, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        header.addView(tag(thread.paperIds.size() + " 篇 HTML"));
+        box.addView(header);
+
+        for (DeepReadMessage message : thread.messages) box.addView(chatMessageView(message));
+        if (busyDeepReadThreadIds.contains(thread.id)) box.addView(pendingMessageView());
+
+        EditText input = input("继续追问论文细节");
+        input.setSingleLine(false);
+        input.setMinLines(2);
+        input.setMaxLines(5);
+        input.setText(deepReadDraft);
+        input.addTextChangedListener(new TextWatcher() {
+            @Override
+            public void beforeTextChanged(CharSequence s, int start, int count, int after) {
+            }
+
+            @Override
+            public void onTextChanged(CharSequence s, int start, int before, int count) {
+                deepReadDraft = s == null ? "" : s.toString();
+            }
+
+            @Override
+            public void afterTextChanged(Editable s) {
+            }
+        });
+        Button send = primaryButton(busyDeepReadThreadIds.contains(thread.id) ? "精读中" : "发送");
+        send.setEnabled(!busyDeepReadThreadIds.contains(thread.id));
+        send.setOnClickListener(view -> submitDeepReadQuestion());
+
+        LinearLayout composer = new LinearLayout(this);
+        composer.setOrientation(LinearLayout.HORIZONTAL);
+        composer.setGravity(Gravity.BOTTOM);
+        composer.setPadding(0, dp(10), 0, 0);
+        composer.addView(input, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        composer.addView(send);
+        box.addView(composer);
+        return box;
+    }
+
+    private View chatMessageView(DeepReadMessage message) {
+        LinearLayout row = new LinearLayout(this);
+        row.setGravity("user".equals(message.role) ? Gravity.RIGHT : Gravity.LEFT);
+        row.setPadding(0, dp(6), 0, dp(6));
+
+        LinearLayout bubble = new LinearLayout(this);
+        bubble.setOrientation(LinearLayout.VERTICAL);
+        bubble.setPadding(dp(12), dp(10), dp(12), dp(10));
+        int color = "user".equals(message.role) ? Color.rgb(229, 237, 223) : Color.rgb(248, 250, 244);
+        bubble.setBackground(cardBackground(color, COLOR_LINE, dp(8)));
+
+        for (String paperId : message.paperIds) {
+            Paper paper = store.getPaper(paperId);
+            if (paper != null) bubble.addView(paperAttachmentBlock(paper));
+        }
+        if (!message.content.isEmpty()) bubble.addView(text(message.content, 15, Color.rgb(45, 56, 60)));
+
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        params.setMargins("user".equals(message.role) ? dp(42) : 0, 0, "user".equals(message.role) ? 0 : dp(42), 0);
+        row.addView(bubble, params);
+        return row;
+    }
+
+    private View pendingMessageView() {
+        LinearLayout row = new LinearLayout(this);
+        row.setGravity(Gravity.LEFT);
+        row.setPadding(0, dp(6), 0, dp(6));
+        TextView bubble = text("正在精读", 15, COLOR_MUTED);
+        bubble.setPadding(dp(12), dp(10), dp(12), dp(10));
+        bubble.setBackground(cardBackground(Color.rgb(248, 250, 244), COLOR_LINE, dp(8)));
+        row.addView(bubble);
+        return row;
+    }
+
+    private View paperAttachmentBlock(Paper paper) {
+        PaperHtml html = htmlByPaperId.get(paper.id);
+        if (html == null && !loadingHtmlIds.contains(paper.id)) scheduleHtmlLoad(paper, false, false);
+
+        Button button = button("HTML · " + shortTitle(paper.translation != null && !paper.translation.titleZh.isEmpty() ? paper.translation.titleZh : paper.title, 28)
+                + (html == null ? " · 读取中" : " · " + Math.max(1, html.htmlLength / 1024) + " KB · " + html.images.size() + " 图"));
+        button.setGravity(Gravity.LEFT | Gravity.CENTER_VERTICAL);
+        button.setOnClickListener(view -> showHtmlAttachment(paper));
+        return button;
+    }
+
+    private void showHtmlAttachment(Paper paper) {
+        PaperHtml html = htmlByPaperId.get(paper.id);
+        if (html == null) {
+            scheduleHtmlLoad(paper, false, true);
+            toast("正在读取 HTML");
+            return;
+        }
+
+        ScrollView scrollView = new ScrollView(this);
+        LinearLayout body = new LinearLayout(this);
+        body.setOrientation(LinearLayout.VERTICAL);
+        body.setPadding(dp(14), dp(12), dp(14), dp(4));
+        body.addView(text(html.sourceUrl, 12, COLOR_BLUE));
+        TextView preview = text(html.compactHtml(PaperHtmlClient.MAX_UI_HTML_CHARS)
+                + (html.htmlLength > PaperHtmlClient.MAX_UI_HTML_CHARS ? "\n..." : ""), 11, Color.rgb(45, 56, 60));
+        preview.setTypeface(android.graphics.Typeface.MONOSPACE);
+        preview.setPadding(0, dp(10), 0, 0);
+        body.addView(preview);
+        scrollView.addView(body);
+
+        new AlertDialog.Builder(this)
+                .setTitle("HTML 附件")
+                .setView(scrollView)
+                .setNegativeButton("关闭", null)
+                .setPositiveButton("打开来源", (dialog, which) -> openUrl(html.sourceUrl))
+                .show();
     }
 
     private void renderSettings() {
@@ -569,6 +800,16 @@ public class MainActivity extends Activity {
                 .setPositiveButton("清空", (dialog, which) -> {
                     store.clear();
                     deleteRecursively(new File(getCacheDir(), "pdfs"));
+                    deleteRecursively(new File(getCacheDir(), "htmls"));
+                    htmlByPaperId.clear();
+                    imageCache.clear();
+                    queuedHtmlIds.clear();
+                    loadingHtmlIds.clear();
+                    deepReadThreads.clear();
+                    deepReadSelectedIds.clear();
+                    busyDeepReadThreadIds.clear();
+                    activeDeepReadThreadId = "";
+                    deepReadDraft = "";
                     File downloads = getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS);
                     if (downloads != null) deleteRecursively(downloads);
                     activeTab = TAB_TODAY;
@@ -648,6 +889,7 @@ public class MainActivity extends Activity {
 
     private void scheduleBackgroundWork(ArrayList<Paper> queue, int startIndex) {
         schedulePdfPrefetch(queue, startIndex);
+        scheduleHtmlPrefetch(queue, startIndex);
         if (!PaperModels.normalize(store.preferences.agnesApiKey).isEmpty()) {
             content.postDelayed(() -> {
                 for (int i = startIndex; i < queue.size(); i++) {
@@ -694,6 +936,132 @@ public class MainActivity extends Activity {
         }
     }
 
+    private void scheduleHtmlPrefetch(ArrayList<Paper> queue, int startIndex) {
+        int end = Math.min(queue.size(), startIndex + 5);
+        for (int i = startIndex; i < end; i++) {
+            Paper paper = queue.get(i);
+            if (queuedHtmlIds.contains(paper.id)) continue;
+            queuedHtmlIds.add(paper.id);
+            scheduleHtmlLoad(paper, false, false);
+        }
+    }
+
+    private void scheduleHtmlLoad(Paper paper, boolean force, boolean notify) {
+        if (paper == null || paper.id.isEmpty()) return;
+        if (!force && htmlByPaperId.containsKey(paper.id)) return;
+        if (loadingHtmlIds.contains(paper.id)) return;
+        loadingHtmlIds.add(paper.id);
+        htmlExecutor.execute(() -> {
+            try {
+                Paper target = store.getPaper(paper.id);
+                PaperHtml html = new PaperHtmlClient().load(this, target == null ? paper : target, force);
+                runOnUiThread(() -> {
+                    htmlByPaperId.put(paper.id, html);
+                    loadingHtmlIds.remove(paper.id);
+                    render();
+                });
+            } catch (Exception exception) {
+                runOnUiThread(() -> {
+                    loadingHtmlIds.remove(paper.id);
+                    if (notify) toast(exception.getMessage());
+                    render();
+                });
+            }
+        });
+    }
+
+    private View htmlFigureStrip(Paper paper) {
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(0, dp(12), 0, 0);
+
+        PaperHtml html = htmlByPaperId.get(paper.id);
+        if (html == null) {
+            scheduleHtmlLoad(paper, false, false);
+            box.addView(text(loadingHtmlIds.contains(paper.id) ? "解析 HTML 图片" : "等待 HTML 图片", 12, COLOR_MUTED));
+            return box;
+        }
+
+        TextView heading = text(html.images.isEmpty() ? "HTML 中未找到图片" : html.images.size() + " 张图片", 12, COLOR_BLUE);
+        heading.setTypeface(null, android.graphics.Typeface.BOLD);
+        box.addView(heading);
+        if (html.images.isEmpty()) return box;
+
+        HorizontalScrollView scrollView = new HorizontalScrollView(this);
+        scrollView.setHorizontalScrollBarEnabled(false);
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setPadding(0, dp(8), 0, 0);
+        for (PaperImage image : html.images) {
+            LinearLayout thumb = imageThumb(image);
+            LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(dp(126), ViewGroup.LayoutParams.WRAP_CONTENT);
+            params.setMargins(0, 0, dp(8), 0);
+            row.addView(thumb, params);
+        }
+        scrollView.addView(row);
+        box.addView(scrollView);
+        return box;
+    }
+
+    private LinearLayout imageThumb(PaperImage image) {
+        LinearLayout thumb = new LinearLayout(this);
+        thumb.setOrientation(LinearLayout.VERTICAL);
+        thumb.setPadding(dp(5), dp(5), dp(5), dp(5));
+        thumb.setBackground(cardBackground(COLOR_PANEL_SOFT, COLOR_LINE, dp(8)));
+        thumb.setOnClickListener(view -> openUrl(image.url));
+
+        ImageView imageView = new ImageView(this);
+        imageView.setBackgroundColor(Color.WHITE);
+        imageView.setScaleType(ImageView.ScaleType.CENTER_INSIDE);
+        imageView.setTag(image.url);
+        thumb.addView(imageView, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(74)));
+        loadImageInto(imageView, image.url);
+
+        String caption = image.caption.isEmpty() ? image.alt : image.caption;
+        TextView captionView = text(caption.isEmpty() ? "论文图片" : caption, 10, COLOR_MUTED);
+        captionView.setMaxLines(2);
+        captionView.setPadding(0, dp(5), 0, 0);
+        thumb.addView(captionView);
+        return thumb;
+    }
+
+    private void loadImageInto(ImageView imageView, String rawUrl) {
+        Bitmap cached = imageCache.get(rawUrl);
+        if (cached != null) {
+            imageView.setImageBitmap(cached);
+            return;
+        }
+        if (loadingImageUrls.contains(rawUrl)) return;
+        loadingImageUrls.add(rawUrl);
+        imageExecutor.execute(() -> {
+            Bitmap bitmap = null;
+            try {
+                URL url = new URL(rawUrl);
+                if (!"https".equalsIgnoreCase(url.getProtocol()) || !PaperHtmlClient.isAllowedArxivHost(url.getHost())) {
+                    throw new IllegalArgumentException("invalid image url");
+                }
+                HttpURLConnection connection = (HttpURLConnection) url.openConnection();
+                connection.setConnectTimeout(12000);
+                connection.setReadTimeout(22000);
+                connection.setRequestProperty("User-Agent", "PaperCard/1.0 native-android");
+                try (BufferedInputStream input = new BufferedInputStream(connection.getInputStream())) {
+                    bitmap = BitmapFactory.decodeStream(input);
+                } finally {
+                    connection.disconnect();
+                }
+            } catch (Exception ignored) {
+            }
+            Bitmap loaded = bitmap;
+            runOnUiThread(() -> {
+                if (loaded != null) {
+                    imageCache.put(rawUrl, loaded);
+                    if (rawUrl.equals(imageView.getTag())) imageView.setImageBitmap(loaded);
+                }
+                loadingImageUrls.remove(rawUrl);
+            });
+        });
+    }
+
     private ArrayList<Paper> reviewQueue() {
         if (reviewQueueIds.isEmpty() && !store.papers.isEmpty()) rebuildReviewQueue();
         ArrayList<Paper> values = new ArrayList<>();
@@ -738,6 +1106,188 @@ public class MainActivity extends Activity {
         if (cursor <= 0) return;
         cursor--;
         render();
+    }
+
+    private ArrayList<Paper> singlePaperList(Paper paper) {
+        ArrayList<Paper> values = new ArrayList<>();
+        if (paper != null) values.add(paper);
+        return values;
+    }
+
+    private ArrayList<Paper> selectedFavoritePapers() {
+        ArrayList<Paper> values = new ArrayList<>();
+        for (Paper paper : store.favoritePapers("all")) {
+            if (deepReadSelectedIds.contains(paper.id)) values.add(paper);
+        }
+        return uniquePapers(values);
+    }
+
+    private void startDeepReadWithPapers(ArrayList<Paper> papers) {
+        ArrayList<Paper> selected = uniquePapers(papers);
+        if (selected.isEmpty()) {
+            toast("请选择收藏论文");
+            return;
+        }
+
+        for (Paper paper : selected) scheduleHtmlLoad(paper, false, false);
+        String now = PaperStore.nowIso();
+        DeepReadThread thread = new DeepReadThread();
+        thread.id = makeId("thread");
+        thread.title = shortTitle(selected.get(0).translation != null && !selected.get(0).translation.titleZh.isEmpty()
+                ? selected.get(0).translation.titleZh
+                : selected.get(0).title, 28);
+        thread.createdAt = now;
+        thread.updatedAt = now;
+        for (Paper paper : selected) thread.paperIds.add(paper.id);
+
+        DeepReadMessage message = new DeepReadMessage();
+        message.id = makeId("message");
+        message.role = "user";
+        message.createdAt = now;
+        message.content = selected.size() > 1
+                ? "请先对这些论文做对照精读，概括共同问题、方法差异和进一步追问点。"
+                : "请先精读这篇论文，概括核心问题、方法、结论和可以继续追问的点。";
+        message.paperIds.addAll(thread.paperIds);
+        thread.messages.add(message);
+
+        deepReadThreads.add(0, thread);
+        activeDeepReadThreadId = thread.id;
+        deepReadSelectedIds.clear();
+        deepReadDraft = "";
+        activeTab = TAB_DEEP_READ;
+        render();
+        askDeepReadAssistant(thread.id);
+    }
+
+    private void addSelectedPapersToActiveThread() {
+        ArrayList<Paper> selected = selectedFavoritePapers();
+        if (selected.isEmpty()) {
+            toast("请选择收藏论文");
+            return;
+        }
+        DeepReadThread thread = activeDeepReadThread();
+        if (thread == null) {
+            startDeepReadWithPapers(selected);
+            return;
+        }
+
+        ArrayList<String> addedIds = new ArrayList<>();
+        for (Paper paper : selected) {
+            scheduleHtmlLoad(paper, false, false);
+            if (!thread.paperIds.contains(paper.id) && thread.paperIds.size() < 6) thread.paperIds.add(paper.id);
+            if (!addedIds.contains(paper.id)) addedIds.add(paper.id);
+        }
+
+        String now = PaperStore.nowIso();
+        DeepReadMessage message = new DeepReadMessage();
+        message.id = makeId("message");
+        message.role = "user";
+        message.createdAt = now;
+        message.content = addedIds.size() > 1
+                ? "请把这些论文纳入当前讨论，并给出它们与已有论文之间的关联。"
+                : "请把这篇论文纳入当前讨论，并说明它和已有论文的联系。";
+        message.paperIds.addAll(addedIds);
+        thread.messages.add(message);
+        thread.updatedAt = now;
+        deepReadSelectedIds.clear();
+        render();
+        askDeepReadAssistant(thread.id);
+    }
+
+    private void submitDeepReadQuestion() {
+        DeepReadThread thread = activeDeepReadThread();
+        String content = PaperModels.normalize(deepReadDraft);
+        if (thread == null || content.isEmpty() || busyDeepReadThreadIds.contains(thread.id)) return;
+
+        String now = PaperStore.nowIso();
+        DeepReadMessage message = new DeepReadMessage();
+        message.id = makeId("message");
+        message.role = "user";
+        message.content = content;
+        message.createdAt = now;
+        thread.messages.add(message);
+        thread.updatedAt = now;
+        deepReadDraft = "";
+        render();
+        askDeepReadAssistant(thread.id);
+    }
+
+    private void askDeepReadAssistant(String threadId) {
+        DeepReadThread thread = findDeepReadThread(threadId);
+        if (thread == null || busyDeepReadThreadIds.contains(thread.id)) return;
+        if (PaperModels.normalize(store.preferences.agnesApiKey).isEmpty()) {
+            toast("请先在设置中填写 Agnes 测试 key");
+            return;
+        }
+
+        busyDeepReadThreadIds.add(thread.id);
+        ArrayList<Paper> papers = papersForIds(thread.paperIds);
+        ArrayList<DeepReadMessage> messages = new ArrayList<>(thread.messages);
+        render();
+        deepReadExecutor.execute(() -> {
+            try {
+                String content = new DeepReadClient().chat(this, papers, messages, store.preferences);
+                runOnUiThread(() -> {
+                    DeepReadThread latest = findDeepReadThread(threadId);
+                    if (latest != null) {
+                        DeepReadMessage answer = new DeepReadMessage();
+                        answer.id = makeId("message");
+                        answer.role = "assistant";
+                        answer.content = content;
+                        answer.createdAt = PaperStore.nowIso();
+                        latest.messages.add(answer);
+                        latest.updatedAt = answer.createdAt;
+                    }
+                    busyDeepReadThreadIds.remove(threadId);
+                    render();
+                });
+            } catch (Exception exception) {
+                runOnUiThread(() -> {
+                    busyDeepReadThreadIds.remove(threadId);
+                    toast(exception.getMessage());
+                    render();
+                });
+            }
+        });
+    }
+
+    private DeepReadThread activeDeepReadThread() {
+        DeepReadThread active = findDeepReadThread(activeDeepReadThreadId);
+        if (active != null) return active;
+        return deepReadThreads.isEmpty() ? null : deepReadThreads.get(0);
+    }
+
+    private DeepReadThread findDeepReadThread(String threadId) {
+        for (DeepReadThread thread : deepReadThreads) {
+            if (thread.id.equals(threadId)) return thread;
+        }
+        return null;
+    }
+
+    private ArrayList<Paper> papersForIds(ArrayList<String> paperIds) {
+        ArrayList<Paper> values = new ArrayList<>();
+        for (String paperId : paperIds) {
+            Paper paper = store.getPaper(paperId);
+            if (paper != null) values.add(paper);
+        }
+        return values;
+    }
+
+    private ArrayList<Paper> uniquePapers(ArrayList<Paper> papers) {
+        ArrayList<Paper> values = new ArrayList<>();
+        for (Paper paper : papers) {
+            if (paper == null || paper.id.isEmpty()) continue;
+            boolean exists = false;
+            for (Paper value : values) {
+                if (value.id.equals(paper.id)) {
+                    exists = true;
+                    break;
+                }
+            }
+            if (!exists) values.add(paper);
+            if (values.size() >= 6) break;
+        }
+        return values;
     }
 
     private void openPdf(Paper paper) {
@@ -918,6 +1468,15 @@ public class MainActivity extends Activity {
         }
         if (paper.authors.size() > 3) builder.append(" 等");
         return builder.toString();
+    }
+
+    private String shortTitle(String value, int limit) {
+        String clean = PaperModels.normalize(value);
+        return clean.length() > limit ? clean.substring(0, limit) + "..." : clean;
+    }
+
+    private String makeId(String prefix) {
+        return prefix + "-" + UUID.randomUUID();
     }
 
     private String shortDate(String value) {

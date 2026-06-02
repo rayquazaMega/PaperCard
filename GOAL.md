@@ -23,15 +23,19 @@ PaperCard is now being maintained as a fully native, standalone Android app for 
 - Query arXiv directly from the app.
 - Store preferences, paper cache, skipped papers, favorite folders, favorites, and translation cache locally on the phone.
 - Call the translation API directly from the phone using the user's personal test key.
+- Fetch arXiv HTML directly from the phone, cache it locally, parse paper figures, and use that HTML for native AI deep reading.
 - Open, render, save, and share PDFs inside the app.
-- Keep a card-first reading workflow where one large paper card dominates the screen, with bottom navigation for Today, Favorites, and Settings.
+- Keep a card-first reading workflow where one large paper card dominates the screen, with bottom navigation for Today, Favorites, Settings, and Deep Read.
+- Do not implement phone features as a lightweight bridge to the Web/Node prototype. Android features should be native and standalone unless the user explicitly targets the legacy prototype.
 
 The current native app delivers:
 
 - Direct arXiv synchronization from Android native code.
 - On-device JSON storage for preferences, papers, favorites, folders, skipped state, and translations.
 - Direct Agnes translation calls in personal-key mode.
-- A large-card native reading UI with bottom Today/Favorites/Settings navigation.
+- Direct arXiv HTML fetch/cache, figure extraction, and native paper image strips.
+- Direct Agnes/OpenAI-compatible AI deep-read discussion calls in personal-key mode.
+- A large-card native reading UI with bottom Today/Favorites/Settings/Deep Read navigation.
 - Native PDF download, cache, rendering, gesture-friendly reading, app-private saving, and PDF sharing through a restricted content provider.
 - A stable review queue model: sync builds an ordered queue once, favorite/skip advances the pointer, and previous-card navigation moves the pointer back instead of undoing the action.
 - Serial background work: automatic translation and PDF prefetch should process one item at a time and skip already-seen papers.
@@ -60,6 +64,7 @@ The user should be able to:
 - Simple visual language: plain typography, clean spacing, restrained colors, no decorative noise.
 - Source transparency: every paper keeps its arXiv abstract URL and PDF URL.
 - Standalone first: the Android app should not require a computer, LAN server, or separate backend for daily use.
+- Native-first: do not solve Android feature requests with a lightweight WebView/API bridge. Build the phone behavior in the native app.
 - Personal-key mode: for this personal app, a disposable test API key may be configured in the app or local native config. The user accepts the risk because the key can be revoked and has no meaningful spend exposure.
 - Keep real production keys out of committed source. If the app ever becomes distributable, move translation back behind a backend or use a user-provided key entry screen.
 - Local-native storage: preferences, cache, favorites, skipped papers, folders, and translations should live on-device, preferably in SQLite/Room or another durable Android storage layer.
@@ -126,6 +131,21 @@ Expected translation output:
 - `key_points`
 - `reading_note`
 
+### AI Deep Read
+
+The Android app has a native Deep Read tab after Today, Favorites, and Settings. It is not a lightweight wrapper around the Web/Node prototype.
+
+Native behavior:
+
+- Fetch paper HTML directly from canonical arXiv HTML first, then ar5iv as a fallback.
+- Cache HTML in app-private storage.
+- Parse figure images from HTML, show them at the bottom of native paper cards, and allow opening figure URLs.
+- Add `AI精读` in the native Favorites screen to create a new chat window for a paper.
+- Let users select multiple favorite papers in the native Deep Read tab and add them to the active chat.
+- Show paper HTML as a compact clickable attachment block in chat; display truncated source text only when opened.
+- Call the Agnes/OpenAI-compatible chat completion API directly from Android using the configured personal key.
+- Keep HTML display safe: render HTML as text, not executable markup; keep arXiv HTTPS host allowlists and size limits.
+
 ### PDF Reader
 
 Legacy prototype: the Web app uses PDF.js to render arXiv PDFs in canvas form. This was intentional because Android WebView often cannot display embedded PDF files reliably.
@@ -155,10 +175,12 @@ The export endpoint returns BibTeX:
 - `src/App.tsx`: Main React UI and interaction logic.
 - `src/api.ts`: Frontend API client and API base URL handling.
 - `src/styles.css`: Responsive UI styling.
-- `android/app/src/main/java/com/papercard/reader/MainActivity.java`: Native card-first app shell and Today/Favorites/Settings UI.
+- `android/app/src/main/java/com/papercard/reader/MainActivity.java`: Native card-first app shell and Today/Favorites/Settings/Deep Read UI.
 - `android/app/src/main/java/com/papercard/reader/PaperStore.java`: On-device store for preferences, papers, folders, favorites, skipped state, and translations.
 - `android/app/src/main/java/com/papercard/reader/ArxivClient.java`: Native arXiv Atom query and parser.
 - `android/app/src/main/java/com/papercard/reader/AgnesClient.java`: Direct Agnes translation client.
+- `android/app/src/main/java/com/papercard/reader/PaperHtmlClient.java`: Native arXiv/ar5iv HTML fetch, cache, sanitizing compaction, and figure extraction.
+- `android/app/src/main/java/com/papercard/reader/DeepReadClient.java`: Direct native AI deep-read chat completion client using paper HTML context.
 - `android/app/src/main/java/com/papercard/reader/PdfActivity.java`: Native PDF reader.
 - `android/app/src/main/java/com/papercard/reader/PaperFileProvider.java`: Restricted content provider for app-cached PDF sharing.
 - `android/`: Native Android project.
@@ -176,7 +198,7 @@ Longer-term target stack:
 - WorkManager for manual or scheduled paper sync.
 - Native Android storage APIs for PDF cache and export files.
 
-The current native implementation is intentionally Java/programmatic UI to keep the personal app lightweight and dependency-minimal. Kotlin/Compose/Room remain possible future upgrades, not requirements for the current personal build.
+The current native implementation is intentionally Java/programmatic UI to keep the personal app dependency-minimal. Kotlin/Compose/Room remain possible future upgrades, not requirements for the current personal build.
 
 ### Runtime Layout
 
@@ -241,13 +263,13 @@ This workspace has been built successfully with a local, non-system toolchain un
 
 The important local paths are:
 
-- `.toolchains/jdk-21`
+- `.toolchains/jdk-17` or `.toolchains/jdk-21`
 - `.toolchains/android-sdk`
 
 PowerShell setup for rebuilds:
 
 ```powershell
-$env:JAVA_HOME=(Resolve-Path '.toolchains\jdk-21').Path
+$env:JAVA_HOME=(Resolve-Path '.toolchains\jdk-17').Path
 $env:ANDROID_HOME=(Resolve-Path '.toolchains\android-sdk').Path
 $env:ANDROID_SDK_ROOT=$env:ANDROID_HOME
 $env:PATH="$env:JAVA_HOME\bin;$env:ANDROID_HOME\platform-tools;$env:ANDROID_HOME\cmdline-tools\latest\bin;$env:PATH"
@@ -255,7 +277,7 @@ Set-Content -Path 'android\local.properties' -Value ("sdk.dir=" + ($env:ANDROID_
 npm run android:debug
 ```
 
-The native Android build currently uses the local Java 21 toolchain and Java 17 source/target compatibility.
+The native Android build was verified with `.toolchains/jdk-17` and Java 17 source/target compatibility. JDK 21 is also available locally if needed.
 
 ## API Summary
 
@@ -390,8 +412,11 @@ For native migration changes, additionally verify:
 - A fresh install can sync arXiv papers directly on the phone.
 - Favorites, folders, skipped state, preferences, and translations survive app restart.
 - Translation failure is shown gracefully when the key is missing or invalid.
+- Paper HTML is fetched directly by Android and cached without the Node server.
+- Native paper cards show HTML-derived figure strips when figures are available.
+- The native Deep Read tab can start from Favorites, attach multiple favorite papers, and call AI directly with paper HTML context.
 - PDF open/download works without the Node proxy.
-- The main Today screen is visually dominated by the active paper card with bottom Today/Favorites/Settings navigation.
+- The main Today screen is visually dominated by the active paper card with bottom Today/Favorites/Settings/Deep Read navigation.
 
 ## Known Limitations
 
@@ -399,7 +424,7 @@ For native migration changes, additionally verify:
 - No cross-device sync yet.
 - The Web prototype still depends on the Node backend, but the Android APK does not.
 - The desktop/Web prototype should preserve its current UI and interaction feel; when native behavior is ported back, prefer logic-only changes unless the user asks for visual revisions.
-- Native storage is currently lightweight JSON in private app storage; Room/SQLite would be more robust for a broader release.
+- Native storage is currently simple JSON in private app storage; Room/SQLite would be more robust for a broader release.
 - Translation cache is local and has no invalidation policy beyond force refresh.
 - Recommendation scoring is simple keyword/category/recency weighting, not a learned model.
 - Only arXiv is implemented right now, though the product direction may later include bioRxiv, medRxiv, and other preprint sources.
@@ -433,7 +458,7 @@ Product guidance:
 
 ### Medium Term
 
-- Move native storage from lightweight JSON to SQLite/Room if the local dataset grows.
+- Move native storage from simple JSON to SQLite/Room if the local dataset grows.
 - Add BibTeX export from on-device favorites.
 - Add reset/import/export for local reading state and preferences.
 - Add category descriptions and presets.
@@ -458,7 +483,7 @@ During the migration, keep backend API responses stable only as long as the Reac
 
 Keep model prompts strict. Translation should return compact JSON that the UI can render without extra parsing tricks.
 
-The Android app is now intended to become the primary product, not just a lightweight shell around the Web experience.
+The Android app is now intended to become the primary product, not a bridge shell around the Web experience.
 
 Do not let generated files obscure source changes. Important generated/runtime paths are ignored:
 

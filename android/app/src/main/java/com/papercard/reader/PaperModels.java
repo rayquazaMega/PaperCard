@@ -230,3 +230,47 @@ class Paper {
         return json;
     }
 }
+
+class PaperImage {
+    String url = "";
+    String alt = "";
+    String caption = "";
+
+    PaperImage(String url, String alt, String caption) {
+        this.url = PaperModels.normalize(url);
+        this.alt = PaperModels.normalize(alt);
+        this.caption = PaperModels.normalize(caption);
+    }
+}
+
+class PaperHtml {
+    String paperId = "";
+    String readerId = "";
+    String sourceUrl = "";
+    String fetchedAt = "";
+    String html = "";
+    int htmlLength = 0;
+    boolean imageTruncated = false;
+    final ArrayList<PaperImage> images = new ArrayList<>();
+
+    String compactHtml(int limit) {
+        return PaperHtmlClient.compactHtml(html, limit);
+    }
+}
+
+class DeepReadMessage {
+    String id = "";
+    String role = "user";
+    String content = "";
+    String createdAt = "";
+    final ArrayList<String> paperIds = new ArrayList<>();
+}
+
+class DeepReadThread {
+    String id = "";
+    String title = "";
+    final ArrayList<String> paperIds = new ArrayList<>();
+    final ArrayList<DeepReadMessage> messages = new ArrayList<>();
+    String createdAt = "";
+    String updatedAt = "";
+}

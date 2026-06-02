@@ -1,4 +1,13 @@
-import type { FavoriteFolder, PapersResponse, Paper, Preferences, TranslateResponse } from "./types";
+import type {
+  DeepReadChatResponse,
+  DeepReadMessage,
+  FavoriteFolder,
+  Paper,
+  PaperHtmlResponse,
+  PapersResponse,
+  Preferences,
+  TranslateResponse
+} from "./types";
 
 const API_BASE_KEY = "papercard.apiBase";
 
@@ -69,6 +78,21 @@ export function translatePaper(paperId: string, force = false) {
   return request<TranslateResponse>("/api/translate", {
     method: "POST",
     body: JSON.stringify({ paperId, force })
+  });
+}
+
+export function fetchPaperHtml(readerId: string, includeHtml = false, refresh = false) {
+  const query = new URLSearchParams();
+  if (includeHtml) query.set("includeHtml", "1");
+  if (refresh) query.set("refresh", "1");
+  const suffix = query.toString() ? `?${query.toString()}` : "";
+  return request<PaperHtmlResponse>(`/api/papers/${encodeURIComponent(readerId)}/html${suffix}`);
+}
+
+export function chatDeepRead(paperIds: string[], messages: Pick<DeepReadMessage, "role" | "content">[]) {
+  return request<DeepReadChatResponse>("/api/deep-read/chat", {
+    method: "POST",
+    body: JSON.stringify({ paperIds, messages })
   });
 }
 
