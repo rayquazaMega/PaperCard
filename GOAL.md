@@ -23,9 +23,9 @@ PaperCard is now being maintained as a fully native, standalone Android app for 
 - Query arXiv directly from the app.
 - Store preferences, paper cache, skipped papers, favorite folders, favorites, and translation cache locally on the phone.
 - Call the translation API directly from the phone using the user's personal test key.
-- Fetch arXiv HTML directly from the phone, cache it locally, parse paper figures, and use that HTML for native AI deep reading.
+- Fetch arXiv HTML directly from the phone, cache it locally, parse paper figures, cache paper images locally, and use the cleaned HTML context for native AI deep reading.
 - Open, render, save, and share PDFs inside the app.
-- Keep a card-first reading workflow where one large paper card dominates the screen, with bottom navigation for Today, Favorites, Settings, and Deep Read.
+- Keep a card-first reading workflow where one large paper card dominates the screen, with bottom navigation for Today, Favorites, Deep Read, and Settings.
 - Do not implement phone features as a lightweight bridge to the Web/Node prototype. Android features should be native and standalone unless the user explicitly targets the legacy prototype.
 
 The current native app delivers:
@@ -33,12 +33,14 @@ The current native app delivers:
 - Direct arXiv synchronization from Android native code.
 - On-device JSON storage for preferences, papers, favorites, folders, skipped state, and translations.
 - Direct Agnes translation calls in personal-key mode.
-- Direct arXiv HTML fetch/cache, figure extraction, and native paper image strips.
+- Direct arXiv HTML fetch/cache, figure extraction, native paper image strips, app-private image cache, and in-app zoomable image viewing.
 - Direct Agnes/OpenAI-compatible AI deep-read discussion calls in personal-key mode.
-- A large-card native reading UI with bottom Today/Favorites/Settings/Deep Read navigation.
+- A large-card native reading UI with bottom Today/Favorites/Deep Read/Settings navigation.
 - Native PDF download, cache, rendering, gesture-friendly reading, app-private saving, and PDF sharing through a restricted content provider.
+- No native BibTeX copy/export action. BibTeX is no longer part of the Android favorite workflow.
 - A stable review queue model: sync builds an ordered queue once, favorite/skip advances the pointer, and previous-card navigation moves the pointer back instead of undoing the action.
 - Serial background work: automatic translation and PDF prefetch should process one item at a time and skip already-seen papers.
+- App-private cache directories are part of the product contract: HTML in `cacheDir/htmls`, PDFs in `cacheDir/pdfs`, and paper images in `cacheDir/images`. Clearing local data should clear all three.
 - The Original action should show the English title/abstract in-app first; opening arXiv externally is a secondary action.
 
 The Web + Node prototype remains in the workspace as a development reference, not as the phone runtime.
@@ -55,7 +57,7 @@ The user should be able to:
 - Generate Chinese summaries and key points with AI.
 - Favorite papers worth revisiting into user-created folders.
 - Open, read, and save the original PDF.
-- Export saved papers for reference management.
+- Revisit favorite papers without redownloading cached PDFs and paper images when the cache is still present.
 
 ## Product Principles
 
@@ -91,14 +93,14 @@ The app shows one paper at a time as a card.
 
 Supported actions:
 
-- Right-swipe favorite
-- Up-swipe skip
-- Previous item recovery through the `上一条` action
+- Right-swipe previous paper
+- Left-swipe skip
+- Favorite through the bottom `收藏` button
 - Open original arXiv page
 - Open PDF reader
-- Generate or refresh translation
+- Generate translation automatically according to the user's translation toggles
 
-The native phone layout should be dominated by the active paper card. Avoid top explanatory panels; summary statistics belong in a small corner area. Operation feedback should appear briefly and disappear automatically.
+The native phone layout should be dominated by the active paper card. Avoid top explanatory panels; the top-right progress label should show `第 x 篇 / 共 x 篇`, not unread/favorite/skipped counts. The Today card bottom row should contain exactly `PDF`, `原文`, and `收藏`, with a small hint below it: right-swipe for previous, left-swipe to skip. Operation feedback should appear briefly and disappear automatically.
 
 ### Preferences
 
@@ -108,6 +110,9 @@ Users can customize:
 - arXiv categories
 - Maximum synchronized result count
 - Translation API key or model settings when running in personal-key mode
+- Whether to show generated Chinese title translations; default on
+- Whether to show generated Chinese abstract translations; default on
+- Whether to translate paper image captions; default off
 
 The native app should remove the required API server address setting from the main workflow.
 
@@ -133,17 +138,18 @@ Expected translation output:
 
 ### AI Deep Read
 
-The Android app has a native Deep Read tab after Today, Favorites, and Settings. It is not a lightweight wrapper around the Web/Node prototype.
+The Android app has a native Deep Read tab between Favorites and Settings. It is not a lightweight wrapper around the Web/Node prototype.
 
 Native behavior:
 
 - Fetch paper HTML directly from canonical arXiv HTML first, then ar5iv as a fallback.
 - Cache HTML in app-private storage.
-- Parse figure images from HTML, show them at the bottom of native paper cards, and allow opening figure URLs.
+- Parse figure images from HTML, show them at the bottom of native paper cards, cache images in app-private storage, and open them in the native zoomable image viewer instead of launching arXiv.
 - Add `AI精读` in the native Favorites screen to create a new chat window for a paper.
-- Let users select multiple favorite papers in the native Deep Read tab and add them to the active chat.
+- Let users use the Deep Read menu to start a new conversation, switch/delete history chats, and add favorite papers to the active chat.
 - Show paper HTML as a compact clickable attachment block in chat; display truncated source text only when opened.
-- Call the Agnes/OpenAI-compatible chat completion API directly from Android using the configured personal key.
+- Do not call AI when papers/HTML are merely added to a chat. Only call the Agnes/OpenAI-compatible chat completion API after the user sends a message, and include the current chat's cleaned HTML context in that request.
+- Ask the AI for concise plain Chinese text without Markdown.
 - Keep HTML display safe: render HTML as text, not executable markup; keep arXiv HTTPS host allowlists and size limits.
 
 ### PDF Reader
@@ -155,31 +161,34 @@ The backend provides a PDF proxy:
 - `GET /api/papers/:readerId/pdf`
 - `GET /api/papers/:readerId/pdf?download=1`
 
-Native behavior: download PDFs directly with Android networking, cache them locally when useful, and render them with Android `PdfRenderer`. The reader should feel phone-native: vertical and horizontal scrolling, pinch/button zoom, page gestures, and floating close/share/save/page controls over the document.
+Native behavior: download PDFs directly with Android networking, cache them locally in app-private `cacheDir/pdfs`, and render them with Android `PdfRenderer`. The reader should feel phone-native: vertical and horizontal scrolling, continuous reading by default, pinch/button zoom, page gestures, and floating close/share/save/page controls over the document.
 
-### Favorites and Export
+### Favorites
 
 Current prototype: favorite folders and favorites are stored locally in `data/store.json`.
 
 Native target: favorite folders and favorites are stored on-device.
 
-The export endpoint returns BibTeX:
+Native behavior:
 
-- `GET /api/export/bibtex`
+- If only one favorite folder exists, tapping `收藏` saves directly.
+- If multiple favorite folders exist, tapping `收藏` opens a folder picker first.
+- Native BibTeX copy/export has been canceled. The legacy Web/Node export endpoint may remain as prototype code, but it should not be reintroduced into the Android favorite workflow unless explicitly requested.
 
 ## Architecture
 
 ### Main Files
 
-- `server/index.js`: Express API server, arXiv sync, store management, translation, PDF proxy, BibTeX export.
+- `server/index.js`: Legacy Express API server, arXiv sync, store management, translation, PDF proxy, and prototype-only BibTeX export.
 - `src/App.tsx`: Main React UI and interaction logic.
 - `src/api.ts`: Frontend API client and API base URL handling.
 - `src/styles.css`: Responsive UI styling.
-- `android/app/src/main/java/com/papercard/reader/MainActivity.java`: Native card-first app shell and Today/Favorites/Settings/Deep Read UI.
+- `android/app/src/main/java/com/papercard/reader/MainActivity.java`: Native card-first app shell and Today/Favorites/Deep Read/Settings UI.
 - `android/app/src/main/java/com/papercard/reader/PaperStore.java`: On-device store for preferences, papers, folders, favorites, skipped state, and translations.
 - `android/app/src/main/java/com/papercard/reader/ArxivClient.java`: Native arXiv Atom query and parser.
 - `android/app/src/main/java/com/papercard/reader/AgnesClient.java`: Direct Agnes translation client.
 - `android/app/src/main/java/com/papercard/reader/PaperHtmlClient.java`: Native arXiv/ar5iv HTML fetch, cache, sanitizing compaction, and figure extraction.
+- `android/app/src/main/java/com/papercard/reader/PdfCache.java`: App-private PDF file cache under `cacheDir/pdfs`.
 - `android/app/src/main/java/com/papercard/reader/DeepReadClient.java`: Direct native AI deep-read chat completion client using paper HTML context.
 - `android/app/src/main/java/com/papercard/reader/PdfActivity.java`: Native PDF reader.
 - `android/app/src/main/java/com/papercard/reader/PaperFileProvider.java`: Restricted content provider for app-cached PDF sharing.
@@ -279,7 +288,7 @@ npm run android:debug
 
 The native Android build was verified with `.toolchains/jdk-17` and Java 17 source/target compatibility. JDK 21 is also available locally if needed.
 
-## API Summary
+## API Summary (Legacy Web Prototype)
 
 Health:
 
@@ -358,7 +367,7 @@ GET /api/papers/:readerId/pdf
 GET /api/papers/:readerId/pdf?download=1
 ```
 
-BibTeX:
+BibTeX (legacy Web prototype only; canceled in native Android):
 
 ```text
 GET /api/export/bibtex
@@ -416,7 +425,7 @@ For native migration changes, additionally verify:
 - Native paper cards show HTML-derived figure strips when figures are available.
 - The native Deep Read tab can start from Favorites, attach multiple favorite papers, and call AI directly with paper HTML context.
 - PDF open/download works without the Node proxy.
-- The main Today screen is visually dominated by the active paper card with bottom Today/Favorites/Settings/Deep Read navigation.
+- The main Today screen is visually dominated by the active paper card with bottom Today/Favorites/Deep Read/Settings navigation.
 
 ## Known Limitations
 
@@ -429,6 +438,20 @@ For native migration changes, additionally verify:
 - Recommendation scoring is simple keyword/category/recency weighting, not a learned model.
 - Only arXiv is implemented right now, though the product direction may later include bioRxiv, medRxiv, and other preprint sources.
 - arXiv may rate-limit direct refreshes; failures should stay visible and non-fatal.
+
+## Android Development Notes
+
+- Keep Android changes native and scoped. Do not solve Android requests by routing through the Web/Node prototype unless the user explicitly asks for prototype work.
+- The Today paper card is the primary surface. Horizontal swipe handling should work from the card body, internal scroll area, and bottom controls, while moving the whole card view. Right swipe means previous paper; left swipe means skip.
+- The Today bottom controls should remain a single row of `PDF`, `原文`, and `收藏`, with the swipe hint below. Do not re-add `重译`, `上一条`, or `略过` buttons to the Today card.
+- Favorite actions must respect folders. If multiple favorite folders exist, show a native folder picker before saving.
+- Translation display is preference-driven: title and abstract translations default on; image caption translation defaults off. Caption translation should not run unless the user enables it.
+- Deep Read attachment/import actions must never trigger an AI answer. Only call AI after the user sends a message, and include the current chat's cleaned HTML context at that time.
+- Deep Read responses should be concise plain Chinese without Markdown because chat bubbles render plain text.
+- Cache locations are app-private and intentional: `cacheDir/htmls` for HTML, `cacheDir/pdfs` for PDF files, and `cacheDir/images` for paper images. Clearing local data should clear all of them.
+- PDF caching already happens through `PdfCache.downloadIfNeeded`; image caching happens when thumbnails or image viewer content are loaded. Reopening favorite content should prefer these caches before network access.
+- Do not commit API keys. A user-provided test key may be used for a small local smoke test, but it should not be written into tracked files.
+- README should remain bilingual with top language links so users can switch between Chinese and English instructions.
 
 ## Mainland China arXiv Access Notes
 
@@ -459,7 +482,6 @@ Product guidance:
 ### Medium Term
 
 - Move native storage from simple JSON to SQLite/Room if the local dataset grows.
-- Add BibTeX export from on-device favorites.
 - Add reset/import/export for local reading state and preferences.
 - Add category descriptions and presets.
 - Add scheduled on-device daily sync through WorkManager.

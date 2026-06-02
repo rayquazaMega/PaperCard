@@ -296,26 +296,6 @@ class PaperStore {
         return skipped.length();
     }
 
-    String bibtex(String folderId) {
-        StringBuilder builder = new StringBuilder();
-        ArrayList<Paper> values = favoritePapers(folderId);
-        for (int i = 0; i < values.size(); i++) {
-            Paper paper = values.get(i);
-            String key = "arxiv" + paper.id.replaceAll("[^0-9A-Za-z]", "");
-            if (i > 0) builder.append("\n\n");
-            builder.append("@article{").append(key).append(",\n")
-                    .append("  title={").append(paper.title).append("},\n")
-                    .append("  author={").append(joinAuthors(paper.authors)).append("},\n")
-                    .append("  year={").append(yearFromDate(paper.published)).append("},\n")
-                    .append("  eprint={").append(paper.id).append("},\n")
-                    .append("  archivePrefix={arXiv},\n")
-                    .append("  primaryClass={").append(paper.category).append("},\n")
-                    .append("  url={").append(paper.absUrl).append("}\n")
-                    .append("}");
-        }
-        return builder.toString();
-    }
-
     private void loadPapers(JSONArray array) {
         papers.clear();
         if (array == null) return;
@@ -365,16 +345,4 @@ class PaperStore {
         for (String name : names) object.remove(name);
     }
 
-    private static String joinAuthors(ArrayList<String> authors) {
-        StringBuilder builder = new StringBuilder();
-        for (int i = 0; i < authors.size(); i++) {
-            if (i > 0) builder.append(" and ");
-            builder.append(authors.get(i));
-        }
-        return builder.toString();
-    }
-
-    private static String yearFromDate(String date) {
-        return date != null && date.length() >= 4 ? date.substring(0, 4) : "";
-    }
 }

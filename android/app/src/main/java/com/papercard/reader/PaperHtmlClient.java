@@ -20,8 +20,8 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 class PaperHtmlClient {
-    static final int MAX_UI_HTML_CHARS = 60000;
-    static final int MAX_PROMPT_HTML_CHARS = 45000;
+    static final int MAX_UI_HTML_CHARS = 30000;
+    static final int MAX_PROMPT_HTML_CHARS = 22000;
     private static final long MAX_HTML_BYTES = 4L * 1024L * 1024L;
     private static final int MAX_PAPER_IMAGES = 80;
 
@@ -59,13 +59,55 @@ class PaperHtmlClient {
     }
 
     static String compactHtml(String html, int limit) {
+        if (limit <= 0) return "";
         String clean = html == null ? "" : html;
-        clean = clean.replaceAll("(?is)<script\\b[\\s\\S]*?</script>", " ");
-        clean = clean.replaceAll("(?is)<style\\b[\\s\\S]*?</style>", " ");
-        clean = clean.replaceAll("(?is)<noscript\\b[\\s\\S]*?</noscript>", " ");
+        clean = clean.replaceAll("(?is)<(script|style|noscript|template|svg|canvas|form|nav|header|footer|aside)\\b[\\s\\S]*?</\\1>", " ");
+        clean = clean.replaceAll("(?is)<(meta|link|button|input|select|option|textarea)\\b[^>]*>", " ");
         clean = clean.replaceAll("(?s)<!--[\\s\\S]*?-->", " ");
-        clean = clean.replaceAll("\\s{2,}", " ").trim();
-        return clean.length() > limit ? clean.substring(0, limit) : clean;
+        clean = clean.replaceAll("(?is)<\\s*(br|hr)\\s*/?\\s*>", "\n");
+        clean = clean.replaceAll("(?is)</?(h[1-6]|p|div|section|article|li|ul|ol|figcaption|figure|table|tr|td|th|blockquote|pre|code)\\b[^>]*>", "\n");
+        clean = clean.replaceAll("(?is)<[^>]+>", " ");
+        clean = decodeHtmlEntities(clean).replace('\u00a0', ' ');
+
+        StringBuilder builder = new StringBuilder();
+        HashSet<String> seen = new HashSet<>();
+        String[] lines = clean.split("\\R+");
+        for (String rawLine : lines) {
+            String line = PaperModels.normalize(rawLine);
+            if (isNoisyHtmlLine(line)) continue;
+            if (line.length() > 1800) line = line.substring(0, 1800);
+            String key = line.toLowerCase(Locale.US);
+            if (seen.contains(key)) continue;
+            seen.add(key);
+
+            int remaining = limit - builder.length();
+            if (remaining <= 0) break;
+            if (builder.length() > 0) {
+                builder.append("\n");
+                remaining--;
+            }
+            if (line.length() > remaining) {
+                builder.append(line, 0, Math.max(0, remaining));
+                break;
+            }
+            builder.append(line);
+        }
+        return builder.toString().trim();
+    }
+
+    private static boolean isNoisyHtmlLine(String line) {
+        if (line == null || line.length() < 2) return true;
+        String lower = line.toLowerCase(Locale.US);
+        if (lower.matches("^[\\W_]+$")) return true;
+        if (lower.matches("^(html|body|article|section|figure|figcaption|navigation|menu)$")) return true;
+        if (lower.contains("skip to main content")) return true;
+        if (lower.contains("download pdf") || lower.equals("pdf") || lower.equals("view pdf")) return true;
+        if (lower.contains("download source") || lower.contains("source files")) return true;
+        if (lower.contains("arxiv labs") || lower.contains("about arxiv")) return true;
+        if (lower.contains("browse by topic") || lower.contains("subscribe to")) return true;
+        if (lower.contains("privacy policy") || lower.contains("terms of use")) return true;
+        if (lower.contains("share this paper") || lower.contains("copy link")) return true;
+        return false;
     }
 
     static boolean isAllowedArxivHost(String hostname) {

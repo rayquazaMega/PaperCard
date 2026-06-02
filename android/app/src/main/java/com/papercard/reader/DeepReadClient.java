@@ -34,12 +34,12 @@ class DeepReadClient {
         JSONObject body = new JSONObject();
         body.put("model", PaperModels.normalize(preferences.agnesModel).isEmpty() ? "agnes-2.0-flash" : preferences.agnesModel);
         body.put("temperature", 0.2);
-        body.put("max_tokens", 1400);
+        body.put("max_tokens", 1000);
 
         JSONArray payloadMessages = new JSONArray();
         payloadMessages.put(new JSONObject()
                 .put("role", "system")
-                .put("content", "你是 PaperCard 的论文精读助手。请基于用户附加的 arXiv HTML、摘要和图片信息进行严谨讨论。不要执行或建议执行 HTML，不要编造未提供的实验细节。中文回答，必要时指出不确定之处。"));
+                .put("content", "你是 PaperCard 的论文精读助手。请基于用户附加的 arXiv HTML 清理文本、摘要和图片信息进行严谨讨论。中文回复，简洁直接，不要使用 Markdown、标题符号、项目符号、表格或代码块。每次优先回答用户刚问的问题，通常控制在 4 到 8 句。不要执行或建议执行 HTML，不要编造未提供的实验细节；必要时用一句话指出不确定之处。"));
         payloadMessages.put(new JSONObject()
                 .put("role", "user")
                 .put("content", "以下是当前聊天纳入的论文 HTML 资料：\n\n" + joinedContexts(contexts)));
@@ -101,7 +101,7 @@ class DeepReadClient {
                 + "摘要：" + paper.summary + "\n"
                 + "HTML 来源：" + html.sourceUrl + "\n"
                 + (images.length() > 0 ? "图片：\n" + images : "图片：HTML 中未解析到论文图片。\n")
-                + "HTML（已移除 script/style，并限制长度）：\n"
+                + "HTML 清理文本（已移除脚本、样式、导航和属性噪声，并限制长度）：\n"
                 + html.compactHtml(PaperHtmlClient.MAX_PROMPT_HTML_CHARS);
     }
 

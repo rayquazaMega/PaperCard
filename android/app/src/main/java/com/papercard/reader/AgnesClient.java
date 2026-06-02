@@ -65,6 +65,59 @@ class AgnesClient {
         return parseTranslation(content);
     }
 
+    String translateCaption(String caption, Preferences preferences) throws Exception {
+        String text = PaperModels.normalize(caption);
+        if (text.isEmpty() || containsChinese(text)) return text;
+
+        String key = PaperModels.normalize(preferences.agnesApiKey);
+        if (key.isEmpty()) throw new IllegalStateException("请先在设置中填写 Agnes 测试 key");
+
+        JSONObject body = new JSONObject();
+        body.put("model", PaperModels.normalize(preferences.agnesModel).isEmpty() ? "agnes-2.0-flash" : preferences.agnesModel);
+        body.put("temperature", 0.1);
+        body.put("max_tokens", 320);
+
+        JSONArray messages = new JSONArray();
+        messages.put(new JSONObject()
+                .put("role", "system")
+                .put("content", "你是科研论文图注翻译助手。把用户给出的图片 caption 翻译成简体中文，只返回译文，不要使用 Markdown，不要添加解释。保留公式、变量名、编号和引用。"));
+        messages.put(new JSONObject()
+                .put("role", "user")
+                .put("content", text));
+        body.put("messages", messages);
+
+        String endpoint = PaperModels.normalize(preferences.agnesApiUrl);
+        if (endpoint.isEmpty()) endpoint = "https://apihub.agnes-ai.com/v1/chat/completions";
+        HttpURLConnection connection = (HttpURLConnection) new URL(endpoint).openConnection();
+        connection.setConnectTimeout(18000);
+        connection.setReadTimeout(45000);
+        connection.setRequestMethod("POST");
+        connection.setDoOutput(true);
+        connection.setRequestProperty("Authorization", "Bearer " + key);
+        connection.setRequestProperty("Content-Type", "application/json; charset=utf-8");
+
+        byte[] bytes = body.toString().getBytes(StandardCharsets.UTF_8);
+        connection.setFixedLengthStreamingMode(bytes.length);
+        try (OutputStream output = connection.getOutputStream()) {
+            output.write(bytes);
+        }
+
+        int status = connection.getResponseCode();
+        String raw = readString(connection, status >= 200 && status < 300);
+        if (status < 200 || status >= 300) {
+            throw new IllegalStateException("Agnes 返回 " + status + ": " + preview(raw));
+        }
+
+        JSONObject data = new JSONObject(raw);
+        String content = data.optJSONArray("choices")
+                .optJSONObject(0)
+                .optJSONObject("message")
+                .optString("content");
+        String clean = PaperModels.normalize(content);
+        if (clean.isEmpty()) throw new IllegalStateException("Agnes 返回为空");
+        return clean;
+    }
+
     private static Translation parseTranslation(String content) throws Exception {
         String clean = content.trim();
         JSONObject json;
@@ -105,5 +158,13 @@ class AgnesClient {
             builder.append(paper.authors.get(i));
         }
         return builder.toString();
+    }
+
+    private static boolean containsChinese(String value) {
+        for (int i = 0; i < value.length(); i++) {
+            char c = value.charAt(i);
+            if (c >= '\u4e00' && c <= '\u9fff') return true;
+        }
+        return false;
     }
 }

@@ -46,7 +46,10 @@ class Preferences {
     String agnesApiKey = BuildConfig.DEFAULT_AGNES_API_KEY;
     String agnesApiUrl = BuildConfig.DEFAULT_AGNES_API_URL;
     String agnesModel = BuildConfig.DEFAULT_AGNES_MODEL;
-    String pdfReadingMode = "paged";
+    String pdfReadingMode = "continuous";
+    boolean translateTitle = true;
+    boolean translateAbstract = true;
+    boolean translateImageCaptions = false;
 
     static Preferences defaults() {
         Preferences value = new Preferences();
@@ -73,7 +76,10 @@ class Preferences {
         value.agnesApiKey = json.optString("agnesApiKey", BuildConfig.DEFAULT_AGNES_API_KEY);
         value.agnesApiUrl = json.optString("agnesApiUrl", BuildConfig.DEFAULT_AGNES_API_URL);
         value.agnesModel = json.optString("agnesModel", BuildConfig.DEFAULT_AGNES_MODEL);
-        value.pdfReadingMode = "continuous".equals(json.optString("pdfReadingMode")) ? "continuous" : "paged";
+        value.pdfReadingMode = "paged".equals(json.optString("pdfReadingMode")) ? "paged" : "continuous";
+        value.translateTitle = json.optBoolean("translateTitle", true);
+        value.translateAbstract = json.optBoolean("translateAbstract", true);
+        value.translateImageCaptions = json.optBoolean("translateImageCaptions", false);
         return value;
     }
 
@@ -87,6 +93,9 @@ class Preferences {
         json.put("agnesApiUrl", agnesApiUrl);
         json.put("agnesModel", agnesModel);
         json.put("pdfReadingMode", pdfReadingMode);
+        json.put("translateTitle", translateTitle);
+        json.put("translateAbstract", translateAbstract);
+        json.put("translateImageCaptions", translateImageCaptions);
         return json;
     }
 }
